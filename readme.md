@@ -24,12 +24,11 @@ While *What, Where, When,* and *How* can easily be recovered by indexing raw cod
 
 ## 🚀 Quickstart & Global Installation
 
-### 1. Assemble the Package Dependencies
-Ensure you have Python 3.10+ installed. Clone your workspace and install **konman** globally in editable mode using `pip`:
+### 1. Install the library via pip
+Ensure you have Python 3.10+ installed.:
 
 ```bash
-cd conman_tool
-pip install -e .
+pip install konman
 ```
 
 Verify your global environment configuration setup by triggering the structured help display:
@@ -40,7 +39,7 @@ konman --help
 ### 2. Scaffold a Codebase Repository
 Navigate into your target software application codebase folder (e.g., `playce-api`) and initialize the context filesystem:
 ```bash
-cd /path/to/playce-api
+cd /path/to/project
 konman init
 ```
 This deploys the underlying `.context/` data graph infrastructure:
