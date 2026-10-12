@@ -14,6 +14,7 @@ jobs:
     permissions:
       contents: read      # required for actions/checkout and other read operations
       id-token: write     # keep if using OIDC (optional for classic token)
+      packages: write
     
     steps:
     - name: Checkout Source Code
