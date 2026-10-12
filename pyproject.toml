@@ -11,6 +11,7 @@ authors = [
 description = "🧠 konman: An automated, first-principles, LLM-agnostic codebase context engine."
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -27,8 +28,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com"
-Issues = "https://github.com/issues"
+Homepage = "https://github.com/adetoyea28/konman.git"
+Issues = "https://github.com/adetoyea28/konman.git/issues"
 
 [project.scripts]
 konman = "konman.cli:main"
