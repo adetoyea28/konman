@@ -1,0 +1,7 @@
+# Build and distribution artifacts
+dist/
+build/
+*.egg-info/
+
+# Local raw context logs cache
+.context/.raw/
