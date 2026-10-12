@@ -12,10 +12,10 @@ jobs:
       name: pypi
       url: https://pypi.org
     permissions:
-      contents: read      # required for actions/checkout and other read operations
-      id-token: write     # keep if using OIDC (optional for classic token)
+      contents: read
+      id-token: write
       packages: write
-    
+
     steps:
     - name: Checkout Source Code
       uses: actions/checkout@v4
@@ -34,7 +34,7 @@ jobs:
       run: python -m build
 
     - name: Publish Package to PyPI Live Index
-      uses: pypa/gh-action-pypi-publish@v1
+      uses: pypa/gh-action-pypi-publish@release/v1
       with:
         user: __token__
         password: ${{ secrets.PYPI_API_TOKEN }}
