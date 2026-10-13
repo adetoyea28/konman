@@ -563,7 +563,7 @@ class CommandFixTests(unittest.TestCase):
         args, kwargs = run.call_args
         self.assertEqual(args[0][1:3], ["log", "-n"])
         self.assertEqual(args[0][3], "4")
-        self.assertEqual(kwargs["cwd"], self.root)
+        self.assertTrue(Path(kwargs["cwd"]).samefile(self.root))
 
     def test_llm_response_parsing_uses_chat_completions_shape(self):
         class Response:

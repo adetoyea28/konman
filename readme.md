@@ -1,4 +1,4 @@
-# konman (Context Manager) v1.1.0a1 Alpha
+# konman (Context Manager) v1.1.0a2 Alpha
 
 **Experimental alpha:** Konman is being tested by early users. Generated adapters and parser fixtures do not prove that every vendor client/version will invoke its hooks. Verify your own tool with `konman doctor`; do not treat prompts or Git hooks as a security boundary. Extraction proposes context for human review and can send redacted transcript text to the configured provider.
 
@@ -30,7 +30,7 @@ While *What, Where, When,* and *How* can easily be recovered by indexing raw cod
 Ensure you have Python 3.10+ installed. For alpha testing from a source checkout, install the current tree:
 
 ```bash
-python -m pip install -e .
+pip install konman==1.1.0a2
 ```
 
 Verify your global environment configuration setup by triggering the structured help display:
