@@ -3,5 +3,41 @@ dist/
 build/
 *.egg-info/
 
-# Local raw context logs cache
+# Python bytecode and test/tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Local Python environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+!.env.template
+.secrets/
+
+# Local editor and operating-system files
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Private prompt/context history (not project documentation)
+/cnman-context.txt
+
+# Local raw transcripts and machine-specific ingestion cursors
 .context/.raw/
+.context/state/cursors/

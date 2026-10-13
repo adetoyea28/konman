@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from datetime import date, datetime
 from typing import List, Optional, Literal, Dict, Any, Union
 
 class Requirement(BaseModel):
@@ -6,10 +7,10 @@ class Requirement(BaseModel):
     statement: str
     kind: Literal["hard", "preference"]
     priority: Optional[str] = "medium"
-    source: Dict[str, str] = Field(default_factory=lambda: {"who": "human", "when": ""})
+    source: Dict[str, Union[str, date, datetime]] = Field(default_factory=lambda: {"who": "human", "when": ""})
     why: Optional[str] = None
     derives_from: Optional[str] = None
-    status: Literal["active", "superseded", "disproven"] = "active"
+    status: Literal["active", "proposed", "rejected", "superseded", "disproven"] = "active"
     added: Optional[Literal["standard", "retroactive"]] = "standard"
 
 class Property(BaseModel):
@@ -32,14 +33,15 @@ class Decision(BaseModel):
     id: str
     chosen: str
     mode: Literal["compared", "default", "forced", "taste"] = "compared"
-    decided: Dict[str, str] = Field(default_factory=lambda: {"who": "unknown", "when": ""})
+    decided: Dict[str, Union[str, date, datetime]] = Field(default_factory=lambda: {"who": "unknown", "when": ""})
     considered: List[ConsideredObject] = Field(default_factory=list)
     tradeoff: Optional[str] = None
     reason: Optional[str] = None
-    status: Literal["active", "needs_review", "superseded"] = "active"
+    status: Literal["active", "proposed", "rejected", "needs_review", "superseded"] = "active"
 
 class BoundaryRule(BaseModel):
+    id: Optional[str] = None
     path: str
     constrains: List[str] = Field(default_factory=list)
     rule: str = "no_edit_without_approval"
-    why: str
+    why: Optional[str] = None

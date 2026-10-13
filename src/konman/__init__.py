@@ -1,2 +1,2 @@
-# conman: The LLM-Agnostic Context Manager Engine
-__version__ = "1.0.0"
+# konman: The LLM-Agnostic Context Manager Engine
+__version__ = "1.1.0a1"

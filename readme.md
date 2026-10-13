@@ -1,6 +1,8 @@
-# 🧠 konman (Context Manager) v1.0.0
+# konman (Context Manager) v1.1.0a1 Alpha
 
-An automated, first-principles, LLM-agnostic codebase context engine. **konman** decouples developer context from ephemeral chat sessions and anchors it directly inside your codebase as version-controlled data. 
+**Experimental alpha:** Konman is being tested by early users. Generated adapters and parser fixtures do not prove that every vendor client/version will invoke its hooks. Verify your own tool with `konman doctor`; do not treat prompts or Git hooks as a security boundary. Extraction proposes context for human review and can send redacted transcript text to the configured provider.
+
+Konman keeps developer context in version-controlled project data rather than only in chat sessions.
 
 ---
 
@@ -25,10 +27,10 @@ While *What, Where, When,* and *How* can easily be recovered by indexing raw cod
 ## 🚀 Quickstart & Global Installation
 
 ### 1. Install the library via pip
-Ensure you have Python 3.10+ installed.:
+Ensure you have Python 3.10+ installed. For alpha testing from a source checkout, install the current tree:
 
 ```bash
-pip install konman
+python -m pip install -e .
 ```
 
 Verify your global environment configuration setup by triggering the structured help display:
@@ -46,13 +48,15 @@ This deploys the underlying `.context/` data graph infrastructure:
 * `requirements/`: `.yaml` files detailing hard structural limitations and developer preferences.
 * `decisions/`: Architectural tradeoffs, chosen technologies, and rejected alternative options.
 * `boundaries.yaml`: Protected codebase paths mapped to explicit verification criteria.
-* `.raw/`: Gitignored temporary buffer cache where streaming logs are collected prior to model extraction.
+* `.raw/`: Project-ignored temporary cache for redacted captured/backfilled events before extraction. Redaction is best-effort; inspect policy and data before sharing.
 
 ---
 
 ## 🔌 Multi-Tool Setup & Integration Manual
 
 **konman** is built to sit between you and your developer assistants. Instead of modifying tool core logic, running `konman setup [tool-name]` drops target-specific metadata adapters into your project directory. Every adapter explicitly directs its assistant to look up instructions from a centralized, auto-compiled index file named `AGENTS.md`.
+
+Setup commands generate configuration; they do not prove that a vendor application accepted or fired the hooks. Hook schemas and transcript paths change by tool/version. Confirm the generated files and test a real prompt with the host application before relying on capture. Konman does not sandbox agent file edits.
 
 ### 1. Antigravity Setup
 Antigravity utilizes dynamic lifecycle event hooks and dynamic background JSON-RPC configurations.
@@ -62,62 +66,66 @@ Antigravity utilizes dynamic lifecycle event hooks and dynamic background JSON-R
   ```
 * **What it configures**: 
   Appends background server hooks directly to your system profile data (`~/.gemini/config/mcp_config.json`) and drops an event configuration module down at `.agents/hooks.json`.
-* **Workflow**: 
-  Every time you submit a prompt or close a chat panel shell inside Antigravity, the tool pipes background conversation logs straight to `.context/.raw/` silently using an insulated, fail-open background channel.
+* **Workflow**:
+  When Antigravity invokes a configured hook, Konman stores a redacted event under `.context/.raw/`. Confirm hook events and payloads with your installed Antigravity version.
 
 ### 2. VS Code Copilot Setup
-VS Code Copilot blocks background lifecycle execution commands but natively queries structural instruction parameters.
+Agent-mode Copilot (preview) and Copilot CLI **do** run hooks. Inline completions and classic Copilot Chat do not.
 * **Setup Command**: 
   ```bash
   konman setup vsc-copilot
   ```
 * **What it configures**: 
-  Creates a workspace routing directory at `.github/copilot-instructions.md`.
-* **Workflow**: 
-  Because Copilot restricts third-party process eavesdropping, use the continuous window cache scraping utility to pull past conversation prompts from your system log directory:
+  `.github/copilot-instructions.md` (read AGENTS.md) and `.github/hooks/konman.json` (`UserPromptSubmit`, `Stop`).
+* **Workflow**:
+  Agent sessions can capture events when the host invokes its hook. Classic Chat does not use these hooks; attempt transcript backfill where logs are available:
   ```bash
-  konman tail
+  konman backfill --source copilot
   ```
 
 ### 3. Cursor Setup
-Cursor allows developers to enforce custom system guidelines over matching codebase directory modules.
+Cursor Agent chat exposes `beforeSubmitPrompt` (plus `sessionEnd` / `stop`).
 * **Setup Command**: 
   ```bash
   konman setup cursor
   ```
 * **What it configures**: 
-  Generates a system override rule file at `.cursor/rules/konman-context.mdc`.
-* **Workflow**: 
-  The file is pre-configured with rules (`alwaysApply: true`, `globs: "*"`) that force the Cursor model to crawl `AGENTS.md` boundaries before proposing code modifications.
+  `.cursor/rules/konman-context.mdc` (`alwaysApply: true`) and merges capture entries into `.cursor/hooks.json` without wiping existing hooks.
+* **Workflow**:
+  Prompts can be captured when Cursor invokes the configured hook. Tab completions use a different surface and are not covered by this adapter.
 
 ### 4. Claude Code Setup
-Claude Code looks up structural constraints from plain markdown files situated in the repository root path.
+Claude Code is the cleanest capture path: labeled human `prompt` on `UserPromptSubmit`, plus `transcript_path` on every event.
 * **Setup Command**: 
   ```bash
   konman setup claude-code
   ```
 * **What it configures**: 
-  Creates a standard `CLAUDE.md` control file.
-* **Workflow**: 
-  It defines absolute constraints, instructing the Claude Code terminal runner to scan your active requirements schema before running build scripts or code rewrites.
+  `CLAUDE.md` (pointer to AGENTS.md) and merges hooks into `.claude/settings.json` for `UserPromptSubmit`, `Stop`, and `SessionEnd`.
+* **Workflow**:
+  Configured hooks capture events when Claude Code invokes them. Session JSONL locations vary by configuration; use `konman backfill --source claude-code` to check supported paths.
 
 ### 5. Codex Setup
-Codex tracks state parameters across isolated session tracking layouts.
+Codex now has the same nested hook schema as Claude Code, plus JSONL rollouts on disk.
 * **Setup Command**: 
   ```bash
   konman setup codex
   ```
 * **What it configures**: 
-  Deploys a standard workspace tracker layout at `.codex/`.
+  Merges capture hooks into `.codex/hooks.json` (`UserPromptSubmit`, `Stop`, `SessionEnd` with a 3s timeout).
+* **Workflow**:
+  Trust/enable hooks in the Codex CLI with `/hooks` where required. Use `konman backfill --source codex` to scan supported rollout paths.
 
 ### 6. Kiro Setup
-Kiro relies on system steering inputs to orchestrate background model automation scripts.
+Kiro IDE 1.x and CLI V3 load standalone hook files. Steering remains the static instruction channel.
 * **Setup Command**: 
   ```bash
   konman setup kiro
   ```
 * **What it configures**: 
-  Deploys explicit semantic steering files to `.kiro/steering/context_steering.md`.
+  `.kiro/steering/context_steering.md` and `.kiro/hooks/konman.json` (`UserPromptSubmit`, `Stop`).
+* **Workflow**:
+  Kiro hook payloads and transcript paths vary by IDE/CLI version. Confirm the prompt event is received, then use `konman backfill --source kiro` for supported session files.
 
 ---
 
@@ -133,36 +141,85 @@ Kiro relies on system steering inputs to orchestrate background model automation
 | **`state`** | `konman state` | Renders a terminal visualization tree detailing active requirements, recent choices, and untracked queues. |
 | **`record`** | `konman record -t [type] -i [id]` | Launches an interactive console wizard to manually log a new `requirement`, `decision`, or `boundary`. |
 | **`resolve`** | `konman resolve [id]` | Reconciles stale nodes flagged with `needs_review`, updating trade-off justifications and healing the graph. |
-| **`check`** | `konman check` | Audits the graph database. Returns error code `1` if any node requires review. Used as a pre-commit block. |
-| **`config`** | `konman config -k [key]` | Securely locks your developer LLM platform API key credentials to `~/.config/konman/config.json`. |
-| **`setup-hooks`** | `konman setup-hooks` | Injects an automated verification shell script loop directly into your local `.git/hooks/pre-commit` workflow. |
-| **`disable-hooks`** | `konman disable-hooks` | Safely tears down and decouples the konman validation script from your local Git pre-commit lifecycles. |
+| **`config`** | `konman config [-k key] [-p provider] [--api-format format] [--base-url url] [--model name] [--migrate] [--clear]` | Saves provider metadata in `~/.config/konman/config.json` and API keys in the OS credential store. |
+| **`setup-hooks`** | `konman setup-hooks` | Installs an idempotent, marked validation block in Git's pre-commit hook while preserving other hook commands. |
+| **`disable-hooks`** | `konman disable-hooks` | Removes only the marked Konman block; unrelated pre-commit hook content is preserved. |
+| **`check`** | `konman check [--strict]` | Read-only schema/reference/staleness audit; `--strict` also fails on proposed nodes. Used by the optional pre-commit hook. |
+| **`doctor`** | `konman doctor [--source name] [--check-api]` | Read-only environment, adapter, credential, and optional endpoint diagnostics. |
+| **`review`** | `konman review [--id NODE_ID] [--approve|--reject] [--edit]` | Inspect and explicitly approve, edit, or reject proposed nodes. |
 
 ### 🔌 Context Extraction & Lifecycle Pipelines
 
 | Command | Syntax / Usage | Operational Description |
 | :--- | :--- | :--- |
-| **`tail`** | `konman tail` | Scrapes deeply nested Windows VS Code cache paths to pull your active Copilot transcript history. |
+| **`backfill`** | `konman backfill --source name [--source-path FILE] [--dry-run]` | Incrementally parses supported source transcripts with durable cursors; parser coverage is version-specific. |
+| **`tail`** | `konman tail` | Deprecated Copilot-only alias for `backfill --source copilot`. |
+| **`clean`** | `konman clean --older-than DAYS [--dry-run]` | Previews or explicitly removes old raw capture files. |
 | **`mine`** | `konman mine -c [count]` | Parses your local Git commit history trail to extract structural reasoning clues from message text blocks. |
-| **`extract`** | `konman extract` | Pipes collected logs from `.context/.raw/` into your LLM to automatically synthesize fresh `.yaml` nodes. |
-| **`handoff`** | `konman handoff [from] [to]` | Packages context boundaries for a new model window and updates active adapters to point to the new tool. |
+| **`extract`** | `konman extract [--provider name] [--api-format format] [--model name] [--base-url url]` | Sends unprocessed captures to a supported provider API and writes quote-grounded `proposed` YAML nodes for human review. |
+| **`handoff`** | `konman handoff [from] [to]` | Writes a context pack under `.context/state/history/` and configures the destination adapter. |
+| **`mcp`** | `konman mcp [--dir project]` | Runs the read-only Konman MCP server over stdio with context, boundary, and decision-search tools. |
+
+`config` supports four request formats: `openai-compatible`, `anthropic`, `gemini`, and `ollama`. Known provider names select a default format and endpoint. For a custom endpoint, provide its API root URL and the format it implements. Konman does not support arbitrary provider-specific REST schemas. Anthropic and Gemini configurations require an explicit model; Ollama works locally without an API key. Keys are stored in the OS credential store when available; existing plaintext keys must be explicitly migrated.
+
+Examples:
+
+```bash
+# Known hosted providers select their API format and endpoint automatically.
+konman config --api-key "$ANTHROPIC_API_KEY" --provider anthropic --model "$ANTHROPIC_MODEL"
+konman config --api-key "$GEMINI_API_KEY" --provider gemini --model "$GEMINI_MODEL"
+konman config --api-key "$GROQ_API_KEY" --provider groq --model "$GROQ_MODEL"
+
+# Configure any custom endpoint that implements a supported API format.
+konman config --api-key "$LLM_API_KEY" --provider my-provider --api-format openai-compatible --base-url https://llm.example/v1 --model my-model
+
+# Local Ollama does not require an API key.
+konman config --provider ollama --model llama3.2
+konman extract
+konman doctor --check-api
+konman review
+```
+
+With no arguments, `konman config` displays saved non-secret settings. Use `konman config --migrate` for legacy plaintext settings and `konman config --clear` to remove configuration. `konman extract` uses saved settings or one-off `--provider`, `--api-format`, `--base-url`, `--model`, and `--api-key` values. `KONMAN_API_KEY` and `KONMAN_BASE_URL` are supported; `OPENAI_API_KEY` and `OPENAI_BASE_URL` remain aliases. Extraction results stay `proposed` until approved with `konman review`.
+
+Raw transcript data is sensitive. Konman applies best-effort credential-pattern redaction before capture and upload, but this is not a guarantee that all secrets or personal data are detected. Inspect captures and use `konman clean` for explicit retention cleanup. Add project-specific patterns to `.context/manifest.yaml`:
+
+```yaml
+redaction:
+  patterns:
+    - '(?i)internal-token-[A-Za-z0-9]+'
+```
+
+Review the full limitations below before enabling capture for a team.
+
+Run `konman --help` for command forms and common examples, or `konman COMMAND --help` for a command's options. Setup subcommands also have dedicated help, for example `konman setup claude-code --help`.
 
 ---
 
 ## 🔒 Enforcement Guardrails & Git Lifecycles
 
-To guarantee that stale information or unconfirmed context models are caught before code is pushed to a remote server, embed **konman** directly into your repository's local Git workflow gates.
+To catch invalid or stale context locally, embed **konman** in the repository's Git workflow. This is a developer convenience, not a security boundary; hooks can be bypassed or omitted in other worktrees and CI environments.
 
 ### Activating the Protection Guardrail:
 Run this command inside your target codebase application directory:
 ```bash
 konman setup-hooks
 ```
-This creates an automated shell script at `.git/hooks/pre-commit` that intercepts every `git commit` attempt to execute `konman check`. If an upstream requirement has been `superseded` or changed, all down-tree decisions automatically lock into a `needs_review` phase, and **konman blocks the commit sequence**. Run `konman resolve [id]` to input your updated tradeoffs and unblock the pipeline instantly.
+This adds a marked block to the active pre-commit hook and executes read-only `konman check`. Stale dependencies are detected at check time without requiring `sync`. Resolve flagged decisions with `konman resolve [id]`; use `konman review` separately for proposed extraction nodes.
 
 ### Opting Out / Disabling the Guardrail:
 If you need to lift the validation gates for temporary testing cycles, bypass the pre-commit checks, or remove **konman** from your automated lifecycle track, execute the decoupling unlinker:
 ```bash
 konman disable-hooks
 ```
-This safely inspects the pre-commit script file and destroys the execution hooks without risking damage to third-party tools or modifications to your untracked source directories.
+This removes only Konman's marked block and preserves unrelated hook commands.
+
+## Alpha Limitations
+
+- Hook formats, transcript locations, and tool behavior vary by vendor and version. Adapters and parsers need validation with the exact host application; a generated file does not prove a hook fired.
+- Transcript parsers cover known layouts, not every release or account configuration. `backfill --source` reports parsed/failed counts; inspect the result before relying on it.
+- Redaction uses patterns and can miss credentials, personal information, or proprietary text. It is best-effort, not a data-loss-prevention system.
+- Extraction is model-assisted and may omit, misunderstand, or duplicate context. Results remain proposed until a human reviews them; quotes establish textual provenance, not truth.
+- The configured provider receives redacted transcript excerpts during `extract`. Review the selected provider's retention and data-use policies before use.
+- Git hooks and AGENTS instructions are advisory local safeguards, not sandboxing or access control.
+- Alpha testing has not validated every adapter or provider against a live vendor environment. Please report tool name/version, OS, and sanitized diagnostics when filing issues; do not attach raw prompts or credentials.
