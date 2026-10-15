@@ -10,16 +10,20 @@ import urllib.error
 import urllib.request
 import uuid
 import getpass
+import importlib.util
 import click
 from pathlib import Path
 from datetime import datetime
 from ruamel.yaml import YAML
 from konman import __version__
 from konman.engine import ContextEngine
+from konman.context_graph import CONTEXT_NODE_CONFIG
 from konman.documentation import render_context_markdown, write_markdown, write_pdf
-from konman.models import BoundaryRule, Decision, Requirement
+from konman.models import (
+    BoundaryRule, Change, ContextObject, Decision, Evidence, Question, Requirement, Risk,
+)
 from konman.redaction import redact_text, redact_value
-from konman.storage import atomic_write_json, atomic_write_text, create_new_bytes, is_raw_ignored
+from konman.storage import atomic_write_json, atomic_write_text, atomic_write_yaml, create_new_bytes, is_raw_ignored
 from konman.transcripts import SOURCES, discover_paths, parse_record
 from konman.config import (
     API_FORMATS,
@@ -28,6 +32,8 @@ from konman.config import (
     resolve_llm_configuration, save_global_api_credentials, load_global_api_credentials,
     clear_global_api_credentials, migrate_legacy_credentials
 )
+
+EXTRACT_NODE_TYPES = tuple(CONTEXT_NODE_CONFIG)
 
 class ConmanTopLevelGroup(click.Group):
     def format_help(self, ctx, formatter):
@@ -43,7 +49,7 @@ class ConmanTopLevelGroup(click.Group):
             return command.get_usage(command_ctx).removeprefix("Usage: ")
 
         commands = self.list_commands(ctx)
-        core_cmds = [c for c in commands if c in ["init", "setup", "sync", "state", "record", "resolve", "review", "doctor", "check", "config", "doc", "setup-hooks", "disable-hooks"]]
+        core_cmds = [c for c in commands if c in ["init", "setup", "sync", "state", "record", "resolve", "review", "doctor", "check", "config", "doc", "gui", "setup-hooks", "disable-hooks"]]
         pipe_cmds = [c for c in commands if c in ["backfill", "tail", "clean", "mine", "extract", "handoff", "hook", "mcp"]]
 
         if core_cmds:
@@ -70,9 +76,11 @@ class ConmanTopLevelGroup(click.Group):
         formatter.write_dl([
             ("", "konman init --dir ."),
             ("", "konman setup claude-code --dir ."),
+            ("", "konman record --type risk --id X-001"),
             ("", "konman config --api-key <key> --provider anthropic --model <model>"),
             ("", "konman config --provider custom --api-format openai-compatible --base-url <url> --api-key <key> --model <model>"),
             ("", "konman doc --format markdown"),
+            ("", "konman gui --dir ."),
             ("", "konman config --provider ollama --model <model>"),
             ("", "konman extract --help"),
             ("", "konman handoff claude-code codex --dir ."),
@@ -92,6 +100,40 @@ def init(dir):
     engine = ContextEngine(dir)
     engine.init_folders()
     click.echo(f"Initialized .context folder array framework inside: {engine.base_dir}")
+
+
+@main.command()
+@click.option("--dir", default=".", help="Project root directory to visualize and edit.")
+@click.option("--port", type=click.IntRange(1, 65535), default=8501, show_default=True, help="Local web server port.")
+@click.option("--no-browser", is_flag=True, help="Start the local UI without opening a browser.")
+def gui(dir, port, no_browser):
+    """Launch the local interactive context graph editor."""
+    missing = [module for module in ("streamlit", "streamlit_flow") if importlib.util.find_spec(module) is None]
+    if missing:
+        raise click.ClickException(
+            "The GUI dependencies are not installed. Install them with `pip install \"konman[gui]\"`."
+        )
+    from konman.gui_app import __file__ as app_path
+
+    engine = ContextEngine(dir)
+    command = [
+        sys.executable, "-m", "streamlit", "run",
+        "--server.address=127.0.0.1",
+        f"--server.port={port}",
+        f"--server.headless={'true' if no_browser else 'false'}",
+        "--browser.gatherUsageStats=false",
+        str(Path(app_path).resolve()),
+        "--",
+        "--dir", str(engine.base_dir),
+    ]
+    click.echo(f"Starting Konman GUI at http://127.0.0.1:{port} for {engine.base_dir}")
+    try:
+        result = subprocess.run(command, cwd=engine.base_dir, check=False)
+    except OSError as error:
+        raise click.ClickException(f"Could not start Streamlit: {error}") from error
+    if result.returncode:
+        raise click.exceptions.Exit(result.returncode)
+
 
 @main.group(name="setup")
 def setup_group():
@@ -382,6 +424,28 @@ def state(dir):
     if not has_decs:
         click.echo("  └─ (No architectural tradeoff items logged in database layout)")
 
+    for folder, title, statuses, default_status, field in (
+        ("objects", "TRACKED OBJECTS", {"active"}, "active", "name"),
+        ("evidence", "EVIDENCE", {"active"}, "active", "excerpt"),
+        ("changes", "RECORDED CHANGES", {"active"}, "proposed", "summary"),
+        ("questions", "OPEN QUESTIONS", {"open", "deferred"}, "open", "question"),
+        ("risks", "RISK REGISTER", {"open", "mitigated", "accepted"}, "open", "statement"),
+    ):
+        directory = engine.ctx_dir / folder
+        records = []
+        if directory.is_dir():
+            for path in sorted(directory.glob("*.yaml")):
+                node = yaml.load(path.read_text(encoding="utf-8"))
+                if node and node.get("status", default_status) in statuses:
+                    records.append(node)
+        click.echo(f"\n{title}:")
+        if records:
+            for node in records:
+                status = str(node.get("status", default_status)).upper()
+                click.echo(f"  ├─ {node.get('id')} [{status}]: {node.get(field) or '(no summary)'}")
+        else:
+            click.echo("  └─ (None)")
+
     click.echo("\n🔌 UNTRACKED BACKGROUND DATA CAPTURE QUEUE:")
     raw_dir = engine.ctx_dir / ".raw"
     untracked_files = [f.name for f in raw_dir.iterdir() if f.is_file()] if raw_dir.exists() else []
@@ -420,17 +484,17 @@ def doc(dir, doc_format, output):
 
 
 @main.command()
-@click.option("--type", "-t", required=True, type=click.Choice(["requirement", "decision", "boundary"]), help="The type of context entity to create.")
-@click.option("--id", "-i", required=True, help="Unique identifier (e.g., R-101, D-002, B-001).")
+@click.option("--type", "-t", required=True, type=click.Choice(EXTRACT_NODE_TYPES), help="The type of context entity to create.")
+@click.option("--id", "-i", required=True, help="Unique identifier using the type prefix (R, D, B, E, C, Q, X, or O).")
 @click.option("--dir", default=".", help="Target project root directory location.")
 def record(type, id, dir):
-    """Manually record an entity (Requirement, Decision, Boundary) into the data graph."""
+    """Manually record a context entity in the data graph."""
     engine = ContextEngine(dir)
     engine.init_folders()
     yaml = YAML()
     yaml.preserve_quotes = True
     timestamp = datetime.now().strftime("%Y-%m-%d")
-    expected_prefix = {"requirement": "R", "decision": "D", "boundary": "B"}[type]
+    expected_prefix = CONTEXT_NODE_CONFIG[type][0]
     if not re.fullmatch(rf"{expected_prefix}-\d+", id):
         raise click.BadParameter(f"{type} IDs must use the form {expected_prefix}-001.", param_hint="--id")
 
@@ -438,10 +502,11 @@ def record(type, id, dir):
         statement = click.prompt(" Enter the core Requirement statement")
         kind = click.prompt("  Kind", type=click.Choice(["hard", "preference"]), default="hard")
         why = click.prompt(" Why is this requirement needed?", default="")
-        payload = {"id": id, "statement": statement, "kind": kind, "priority": "high" if kind == "hard" else "medium", "source": {"who": "human:dev", "when": timestamp}, "why": why if why else None, "status": "active"}
+        payload = {"id": id, "statement": statement, "kind": kind, "priority": "high" if kind == "hard" else "medium", "source": {"who": "human:dev", "when": timestamp}, "why": why if why else None, "evidence_ids": _prompt_reference_list("Evidence IDs (comma-separated, optional)"), "status": "active"}
         target_path = engine.ctx_dir / "requirements" / f"{id}.yaml"
     elif type == "decision":
         chosen = click.prompt(" Chosen candidate/object name")
+        chosen_object_id = click.prompt(" Tracked object ID (optional)", default="") or None
         mode = click.prompt("  Decision mode", type=click.Choice(["compared", "default", "forced", "taste"]), default="compared")
         reason = click.prompt(" Reason or tradeoff summary", default="")
         considered = []
@@ -451,8 +516,8 @@ def record(type, id, dir):
                 fail_prop = click.prompt(f" Which property caused {alt_name} to fail?")
                 fail_req = click.prompt(f" Which Requirement ID did it violate?")
                 considered.append({"object": alt_name, "properties": [{"key": fail_prop, "value": True, "evidence": "documented"}], "evaluations": [{"req": fail_req, "result": "fail", "via": fail_prop}], "verdict": "rejected"})
-        considered.append({"object": chosen, "properties": [], "evaluations": [], "verdict": "selected"})
-        payload = {"id": id, "chosen": chosen, "mode": mode, "decided": {"who": "human:dev", "when": timestamp}, "considered": considered, "reason": reason if reason else None, "status": "active"}
+        considered.append({"object": chosen, "object_id": chosen_object_id, "properties": [], "evaluations": [], "verdict": "selected"})
+        payload = {"id": id, "chosen": chosen, "mode": mode, "decided": {"who": "human:dev", "when": timestamp}, "considered": considered, "reason": reason if reason else None, "evidence_ids": _prompt_reference_list("Evidence IDs (comma-separated, optional)"), "status": "active"}
         target_path = engine.ctx_dir / "decisions" / f"{id}.yaml"
     elif type == "boundary":
         path_str = click.prompt(" Enter the codebase file path to protect")
@@ -469,20 +534,96 @@ def record(type, id, dir):
                 raise click.ClickException("boundaries.yaml must contain a list or mapping.")
         if any(isinstance(item, dict) and (item.get("id") == id or item.get("path") == path_str) for item in boundaries):
             raise click.ClickException(f"Boundary ID '{id}' or path '{path_str}' already exists.")
-        boundaries.append({"id": id, "path": path_str, "rule": "no_edit_without_approval", "why": why or None, "constrains": []})
+        boundaries.append({"id": id, "path": path_str, "rule": "no_edit_without_approval", "why": why or None, "constrains": [], "evidence_ids": _prompt_reference_list("Evidence IDs (comma-separated, optional)")})
         payload = boundaries
+    elif type == "evidence":
+        source_type = click.prompt(
+            " Evidence source type",
+            type=click.Choice(["human", "transcript", "commit", "document", "issue", "test", "other"]),
+            default="human",
+        )
+        locator = click.prompt(" Source locator (URL, commit, file, or event ID)", default="") or None
+        excerpt = click.prompt(" Verbatim evidence excerpt")
+        payload = {
+            "id": id, "source_type": source_type, "locator": locator, "excerpt": excerpt,
+            "captured_by": os.environ.get("KONMAN_REVIEWER") or getpass.getuser(),
+            "captured_at": datetime.now().isoformat(timespec="seconds"),
+            "related_nodes": _prompt_reference_list("Related node IDs (comma-separated, optional)"),
+        }
+        target_path = _context_node_path(engine, type, id)
+    elif type == "change":
+        summary = click.prompt(" Change summary")
+        commit = click.prompt(" Commit hash (optional)", default="") or None
+        files = _prompt_reference_list(" Changed file paths (comma-separated, optional)")
+        payload = {
+            "id": id, "summary": summary, "commit": commit,
+            "author": os.environ.get("KONMAN_REVIEWER") or getpass.getuser(),
+            "changed_at": datetime.now().strftime("%Y-%m-%d"),
+            "files": files,
+            "implements": _prompt_reference_list("Implemented decision IDs (comma-separated, optional)"),
+            "affects": _prompt_reference_list("Affected requirement IDs (comma-separated, optional)"),
+            "evidence": _prompt_reference_list("Evidence IDs (comma-separated, optional)"),
+            "status": "active",
+        }
+        target_path = _context_node_path(engine, type, id)
+    elif type == "question":
+        payload = {
+            "id": id,
+            "question": click.prompt(" Unresolved question"),
+            "owner": click.prompt(" Owner (optional)", default="") or None,
+            "requirements": _prompt_reference_list("Related requirement IDs (comma-separated, optional)"),
+            "decisions": _prompt_reference_list("Related decision IDs (comma-separated, optional)"),
+            "objects": _prompt_reference_list("Related object IDs (comma-separated, optional)"),
+            "evidence": _prompt_reference_list("Evidence IDs (comma-separated, optional)"),
+            "status": "open",
+        }
+        target_path = _context_node_path(engine, type, id)
+    elif type == "risk":
+        payload = {
+            "id": id,
+            "statement": click.prompt(" Risk statement"),
+            "likelihood": click.prompt(" Likelihood", type=click.Choice(["low", "medium", "high"]), default="medium"),
+            "impact": click.prompt(" Impact", type=click.Choice(["low", "medium", "high"]), default="medium"),
+            "mitigation": click.prompt(" Mitigation (optional)", default="") or None,
+            "requirements": _prompt_reference_list("Related requirement IDs (comma-separated, optional)"),
+            "decisions": _prompt_reference_list("Related decision IDs (comma-separated, optional)"),
+            "changes": _prompt_reference_list("Related change IDs (comma-separated, optional)"),
+            "evidence": _prompt_reference_list("Evidence IDs (comma-separated, optional)"),
+            "status": "open",
+        }
+        target_path = _context_node_path(engine, type, id)
+    elif type == "object":
+        properties = []
+        while click.confirm(" Add a property to this object?"):
+            properties.append({
+                "key": click.prompt(" Property name"),
+                "value": click.prompt(" Property value"),
+                "evidence": click.prompt(
+                    " Property evidence basis",
+                    type=click.Choice(["measured", "documented", "claimed"]),
+                    default="claimed",
+                ),
+            })
+        payload = {
+            "id": id,
+            "name": click.prompt(" Object name"),
+            "kind": click.prompt(" Object kind (component, technology, service, etc.)", default="") or None,
+            "description": click.prompt(" Description (optional)", default="") or None,
+            "properties": properties,
+            "evidence": _prompt_reference_list("Evidence IDs (comma-separated, optional)"),
+            "status": "active",
+        }
+        target_path = _context_node_path(engine, type, id)
 
     if type != "boundary" and target_path.exists():
         raise click.ClickException(f"{id} already exists; refusing to overwrite context data.")
 
     try:
-        if type == "requirement":
-            Requirement.model_validate(payload)
-        elif type == "decision":
-            Decision.model_validate(payload)
-        else:
+        if type == "boundary":
             for boundary in payload:
                 BoundaryRule.model_validate(boundary)
+        else:
+            CONTEXT_NODE_CONFIG[type][2].model_validate(payload)
     except Exception as error:
         raise click.ClickException(f"Context record failed schema validation: {error}") from error
 
@@ -496,13 +637,13 @@ def record(type, id, dir):
 
 @main.command()
 @click.option("--dir", default=".", help="Target project root directory location.")
-@click.option("--id", "node_id", help="Requirement, decision, or boundary ID to review.")
+@click.option("--id", "node_id", help="Context node ID to review.")
 @click.option("--approve", is_flag=True, help="Approve a proposed node after confirmation.")
 @click.option("--reject", is_flag=True, help="Reject a proposed node with a recorded reason.")
 @click.option("--edit", is_flag=True, help="Edit proposed node text before saving or approval.")
 @click.option("--yes", is_flag=True, help="Skip approval confirmation for explicitly scripted use.")
 def review(dir, node_id, approve, reject, edit, yes):
-    """Inspect, edit, approve, or reject extracted proposed nodes."""
+    """Inspect, edit, approve, or reject proposed context nodes."""
     if approve and reject:
         raise click.UsageError("Choose only one of --approve or --reject.")
     if yes and not approve:
@@ -510,7 +651,11 @@ def review(dir, node_id, approve, reject, edit, yes):
     engine = ContextEngine(dir)
     yaml = YAML()
     yaml.preserve_quotes = True
-    folders = {"R": engine.ctx_dir / "requirements", "D": engine.ctx_dir / "decisions"}
+    folders = {
+        prefix: engine.ctx_dir / folder
+        for prefix, folder, _, _ in CONTEXT_NODE_CONFIG.values()
+        if prefix != "B"
+    }
     boundaries_path = engine.ctx_dir / "boundaries.yaml"
 
     if not node_id:
@@ -543,16 +688,19 @@ def review(dir, node_id, approve, reject, edit, yes):
             click.echo("No proposed nodes are waiting for review.")
             return
         for prefix, node, path in proposals:
-            label = node.get("statement") if prefix == "R" else node.get("chosen") if prefix == "D" else node.get("path")
+            label_field = next(config[3] for config in CONTEXT_NODE_CONFIG.values() if config[0] == prefix)
+            label = node.get(label_field)
             click.echo(f"{node.get('id', path.stem)} [{prefix}] {label}")
-            if node.get("evidence"):
-                click.echo(f"  Evidence: {node['evidence']}")
+            evidence_refs = node.get("evidence_ids") or node.get("evidence")
+            if evidence_refs:
+                click.echo(f"  Evidence: {evidence_refs}")
         click.echo("Run `konman review --id NODE_ID` to inspect or decide a proposal.")
         return
 
-    match = re.fullmatch(r"([RDB])-(\d+)", node_id)
+    prefixes = "".join(config[0] for config in CONTEXT_NODE_CONFIG.values())
+    match = re.fullmatch(rf"([{prefixes}])-(\d+)", node_id)
     if not match:
-        raise click.BadParameter("expected a node ID such as R-001, D-001, or B-001", param_hint="--id")
+        raise click.BadParameter("expected a typed context node ID such as R-001 or O-001", param_hint="--id")
     prefix = match.group(1)
     boundaries = None
     if prefix == "B":
@@ -568,22 +716,27 @@ def review(dir, node_id, approve, reject, edit, yes):
     else:
         path = folders[prefix] / f"{node_id}.yaml"
         if not path.is_file():
-            raise click.ClickException(f"No requirement or decision with ID {node_id} exists.")
+            raise click.ClickException(f"No context node with ID {node_id} exists.")
         try:
             node = yaml.load(path.read_text(encoding="utf-8"))
         except Exception as error:
             raise click.ClickException(f"Cannot parse {node_id}: {error}") from error
     if not node:
-        raise click.ClickException(f"No boundary with ID {node_id} exists.")
+        raise click.ClickException(f"No context node with ID {node_id} exists.")
     if not isinstance(node, dict) or node.get("status") != "proposed":
         raise click.ClickException(f"{node_id} is not a valid proposed node.")
 
-    is_requirement = prefix == "R"
-    is_decision = prefix == "D"
-    edit_field = "statement" if is_requirement else "chosen" if is_decision else "path"
-    reason_field = "why" if prefix in ("R", "B") else "reason"
+    node_type = next(key for key, value in CONTEXT_NODE_CONFIG.items() if value[0] == prefix)
+    is_requirement = node_type == "requirement"
+    is_decision = node_type == "decision"
+    edit_field = CONTEXT_NODE_CONFIG[node_type][3]
+    reason_field = {
+        "requirement": "why", "decision": "reason", "boundary": "why",
+        "evidence": "excerpt", "change": "summary", "question": "question",
+        "risk": "statement", "object": "description",
+    }[node_type]
     click.echo(f"{node_id}: {node.get(edit_field)}")
-    click.echo(f"Evidence: {node.get('evidence', '(missing)')}")
+    click.echo(f"Evidence: {node.get('evidence_ids') or node.get('evidence', '(missing)')}")
     if edit:
         node[edit_field] = click.prompt(f"Updated {edit_field}", default=str(node.get(edit_field, "")))
         node[reason_field] = click.prompt(f"Updated {reason_field}", default=str(node.get(reason_field) or "")) or None
@@ -601,7 +754,11 @@ def review(dir, node_id, approve, reject, edit, yes):
         if not yes and not click.confirm(f"Approve {node_id} and activate it?", default=False):
             click.echo("Approval cancelled.")
             return
-        node["status"] = "active"
+        node["status"] = {
+            "question": "open",
+            "risk": "open",
+            "object": "active",
+        }.get(node_type, "active")
         if is_decision:
             for item in node.get("considered", []):
                 if item.get("object") == node.get("chosen"):
@@ -615,7 +772,7 @@ def review(dir, node_id, approve, reject, edit, yes):
 
     if approve or reject or edit:
         try:
-            model = Requirement if is_requirement else Decision if is_decision else BoundaryRule
+            model = CONTEXT_NODE_CONFIG[node_type][2]
             model.model_validate(node)
         except Exception as error:
             raise click.ClickException(f"Edited node failed schema validation: {error}") from error
@@ -630,12 +787,72 @@ def review(dir, node_id, approve, reject, edit, yes):
 @main.command()
 @click.argument("id")
 @click.option("--replace-req", multiple=True, help="Replace a stale requirement reference as OLD_ID=ACTIVE_ID; repeatable.")
+@click.option("--answer", help="Record an answer and resolve a question.")
+@click.option("--defer", "defer_reason", help="Defer a question with a reason.")
+@click.option("--mitigate", help="Record mitigation and resolve a risk as mitigated.")
+@click.option("--accept-risk", help="Accept a risk with a rationale.")
+@click.option("--close-risk", help="Close a risk with a resolution.")
 @click.option("--dir", default=".", help="Target project root directory location.")
-def resolve(id, replace_req, dir):
-    """Interactively reconcile and repair a decision node flagged with review states."""
+def resolve(id, replace_req, answer, defer_reason, mitigate, accept_risk, close_risk, dir):
+    """Reconcile stale decisions or resolve open questions and risks."""
     engine = ContextEngine(dir)
+    selected_actions = [answer, defer_reason, mitigate, accept_risk, close_risk]
+    if sum(action is not None for action in selected_actions) > 1:
+        raise click.UsageError("Choose only one question or risk resolution action.")
+    if re.fullmatch(r"Q-\d+", id):
+        if replace_req or not (answer or defer_reason):
+            raise click.UsageError("Questions require either --answer TEXT or --defer REASON.")
+        target_path = engine.ctx_dir / "questions" / f"{id}.yaml"
+        if not target_path.is_file():
+            raise click.ClickException(f"No question with ID '{id}' exists.")
+        try:
+            node = YAML().load(target_path.read_text(encoding="utf-8"))
+            Question.model_validate(node)
+        except Exception as error:
+            raise click.ClickException(f"Cannot read question '{id}': {error}") from error
+        if node["status"] not in ("open", "deferred"):
+            raise click.ClickException(f"Question '{id}' is not open or deferred.")
+        if answer:
+            node.update({"status": "answered", "answer": answer, "resolution": answer})
+        else:
+            node.update({"status": "deferred", "resolution": defer_reason})
+        atomic_write_yaml(target_path, node, engine.yaml)
+        engine.compile_agents_md()
+        click.echo(f" Question '{id}' saved with status '{node['status']}'.")
+        return
+    if re.fullmatch(r"X-\d+", id):
+        action_by_option = {
+            "mitigate": mitigate,
+            "accept-risk": accept_risk,
+            "close-risk": close_risk,
+        }
+        action = next((key for key, value in action_by_option.items() if value), None)
+        if replace_req or not action:
+            raise click.UsageError("Risks require one of --mitigate TEXT, --accept-risk RATIONALE, or --close-risk REASON.")
+        target_path = engine.ctx_dir / "risks" / f"{id}.yaml"
+        if not target_path.is_file():
+            raise click.ClickException(f"No risk with ID '{id}' exists.")
+        try:
+            node = YAML().load(target_path.read_text(encoding="utf-8"))
+            Risk.model_validate(node)
+        except Exception as error:
+            raise click.ClickException(f"Cannot read risk '{id}': {error}") from error
+        if node["status"] not in ("open", "mitigated", "accepted"):
+            raise click.ClickException(f"Risk '{id}' is not open.")
+        if action == "mitigate":
+            node.update({"status": "mitigated", "mitigation": mitigate, "resolution": mitigate})
+        elif action == "accept-risk":
+            node.update({"status": "accepted", "resolution": accept_risk})
+        else:
+            node.update({"status": "closed", "resolution": close_risk})
+        atomic_write_yaml(target_path, node, engine.yaml)
+        engine.compile_agents_md()
+        click.echo(f" Risk '{id}' saved with status '{node['status']}'.")
+        return
+    if any(action is not None for action in selected_actions):
+        raise click.UsageError("Question and risk resolution options require a Q- or X- node ID.")
     if not re.fullmatch(r"D-\d+", id):
-        raise click.BadParameter("decision IDs must use the form D-001", param_hint="id")
+        raise click.BadParameter("decision IDs must use D-001; questions use Q-001 and risks use X-001", param_hint="id")
     yaml = YAML()
     yaml.preserve_quotes = True
     target_path = engine.ctx_dir / "decisions" / f"{id}.yaml"
@@ -715,11 +932,14 @@ def resolve(id, replace_req, dir):
 @click.option("--count", "-c", default=10, help="Number of historical commit messages back to process.")
 @click.option("--dir", default=".", help="Target project root directory location.")
 def mine(count, dir):
-    """Parse local Git repository commit messages history trail to capture contextual explanation data logs."""
+    """Capture Git history and propose structured Change and Evidence records."""
     engine = ContextEngine(dir)
     click.echo(f"  Mining the last {count} git commits for architectural reasoning clues...")
     extracted = engine.mine_git_history(count)
-    click.echo(f" History archeology complete! Extracted [{extracted}] raw context dumps into .context/.raw/")
+    click.echo(
+        f" History mining complete. Stored [{extracted}] raw context dumps and proposed "
+        "Change/Evidence records for commits with explicit reasoning clues."
+    )
 
 
 def _collect_human_turns(value):
@@ -1011,7 +1231,10 @@ def _split_capture(content, max_chars=12000):
 
 def _write_context_node(folder, prefix, payload, capture_id, chunk_index, yaml):
     folder.mkdir(parents=True, exist_ok=True)
-    subject_field = "statement" if prefix == "R" else "chosen"
+    subject_field = {
+        "R": "statement", "D": "chosen", "E": "excerpt", "C": "summary",
+        "Q": "question", "X": "statement", "O": "name",
+    }.get(prefix, "statement")
     subject = " ".join(str(payload.get(subject_field, "")).split()).casefold()
     candidate_fingerprint = hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
@@ -1019,7 +1242,7 @@ def _write_context_node(folder, prefix, payload, capture_id, chunk_index, yaml):
     for existing_path in folder.glob(f"{prefix}-*.yaml"):
         existing = yaml.load(existing_path.read_text(encoding="utf-8"))
         existing_subject = " ".join(str((existing or {}).get(subject_field, "")).split()).casefold()
-        if subject and subject == existing_subject:
+        if prefix != "E" and subject and subject == existing_subject:
             return existing.get("id"), False
         if (
             existing
@@ -1040,12 +1263,27 @@ def _write_context_node(folder, prefix, payload, capture_id, chunk_index, yaml):
         "capture_chunk": chunk_index,
         "candidate_fingerprint": candidate_fingerprint,
     })
-    (Requirement if prefix == "R" else Decision).model_validate(payload)
+    model = next((config[2] for config in CONTEXT_NODE_CONFIG.values() if config[0] == prefix), None)
+    if model is None or model is BoundaryRule:
+        raise ValueError(f"Unsupported context node prefix: {prefix}")
+    model.model_validate(payload)
     from io import StringIO
     serialized = StringIO()
     yaml.dump(payload, serialized)
     atomic_write_text(folder / f"{node_id}.yaml", serialized.getvalue())
     return node_id, True
+
+
+def _prompt_reference_list(label):
+    value = click.prompt(label, default="")
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _context_node_path(engine, node_type, node_id):
+    prefix, folder, _, _ = CONTEXT_NODE_CONFIG[node_type]
+    if node_type == "boundary":
+        return engine.ctx_dir / "boundaries.yaml"
+    return engine.ctx_dir / folder / f"{node_id}.yaml"
 
 
 def _write_boundary_node(boundaries_path, payload, capture_id, chunk_index, yaml):
@@ -1093,17 +1331,30 @@ def _write_boundary_node(boundaries_path, payload, capture_id, chunk_index, yaml
     return node_id, True
 
 
+def _write_quote_evidence(engine, quote, model, today, capture_id, chunk_id, yaml):
+    return _write_context_node(
+        engine.ctx_dir / "evidence", "E", {
+            "source_type": "transcript",
+            "locator": f"{capture_id}:{chunk_id}",
+            "excerpt": quote,
+            "captured_by": f"llm:{model}",
+            "captured_at": today,
+            "status": "proposed",
+        }, capture_id, chunk_id, yaml,
+    )
+
+
 @main.command()
 @click.option("--api-key", envvar=["KONMAN_API_KEY", "OPENAI_API_KEY"], help="Provider API key (or set KONMAN_API_KEY).")
 @click.option("--provider", default=None, help="Provider label; defaults to the saved provider.")
 @click.option("--api-format", type=click.Choice(API_FORMATS), default=None, help="Provider API protocol format.")
 @click.option("--model", default=None, help="Model name; defaults to the saved config or gpt-4o-mini.")
 @click.option("--base-url", default=None, envvar=["KONMAN_BASE_URL", "OPENAI_BASE_URL"], help="Provider API root URL; defaults to the saved provider endpoint.")
-@click.option("--type", "node_types", multiple=True, type=click.Choice(["requirement", "decision", "boundary"]), help="Node type(s) to extract; repeat to select multiple. Defaults to all.")
+@click.option("--type", "node_types", multiple=True, type=click.Choice(EXTRACT_NODE_TYPES), help="Node type(s) to extract; repeat to select multiple. Defaults to all.")
 @click.option("--dir", default=".", help="Target project root directory location.")
 def extract(api_key, provider, api_format, model, base_url, node_types, dir):
     """Extract evidence-grounded proposed context nodes from unprocessed captures."""
-    node_types = tuple(dict.fromkeys(node_types)) or ("requirement", "decision", "boundary")
+    node_types = tuple(dict.fromkeys(node_types)) or EXTRACT_NODE_TYPES
     global_cfg = load_global_api_credentials() or {}
     if global_cfg.get("config_error"):
         raise click.ClickException(global_cfg["config_error"])
@@ -1206,10 +1457,20 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                 requirements = extracted_data.get("requirements", [])
                 decisions = extracted_data.get("decisions", [])
                 boundaries = extracted_data.get("boundaries", [])
+                evidence_records = extracted_data.get("evidence", [])
+                changes = extracted_data.get("changes", [])
+                questions = extracted_data.get("questions", [])
+                risks = extracted_data.get("risks", [])
+                objects = extracted_data.get("objects", [])
                 selected_arrays = {
                     "requirement": ("requirements", requirements),
                     "decision": ("decisions", decisions),
                     "boundary": ("boundaries", boundaries),
+                    "evidence": ("evidence", evidence_records),
+                    "change": ("changes", changes),
+                    "question": ("questions", questions),
+                    "risk": ("risks", risks),
+                    "object": ("objects", objects),
                 }
                 for node_type, (key, values) in selected_arrays.items():
                     if node_type in types_to_extract and not isinstance(values, list):
@@ -1224,12 +1485,16 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                         continue
                     if not requirement.get("statement") or requirement.get("kind") not in ("hard", "preference"):
                         continue
+                    evidence_id, evidence_created = _write_quote_evidence(
+                        engine, quote, model, today, capture_id, chunk_id, yaml,
+                    )
                     node_id, was_created = _write_context_node(
                         engine.ctx_dir / "requirements", "R", {
                             "statement": str(requirement["statement"]),
                             "kind": requirement["kind"],
                             "why": requirement.get("why"),
                             "evidence": quote,
+                            "evidence_ids": [evidence_id],
                             "source": {"who": f"llm:{model}", "when": today},
                             "status": "proposed",
                         }, capture_id, chunk_id, yaml,
@@ -1238,15 +1503,22 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                         click.echo(f"    Proposed Requirement: {node_id}")
                         created += 1
                         chunk_created += 1
+                    if evidence_created:
+                        click.echo(f"    Proposed Evidence: {evidence_id}")
+                        created += 1
+                        chunk_created += 1
 
                 for decision in decisions if "decision" in types_to_extract else []:
                     if not isinstance(decision, dict):
                         continue
                     quote = decision.get("evidence")
-                    if not isinstance(quote, str) or not quote.strip() or quote not in redacted_text:
+                    if not isinstance(quote, str) or not quote.strip() or quote not in human_evidence or quote not in redacted_text:
                         continue
                     if not decision.get("chosen") or decision.get("mode") not in ("compared", "default", "forced", "taste"):
                         continue
+                    evidence_id, evidence_created = _write_quote_evidence(
+                        engine, quote, model, today, capture_id, chunk_id, yaml,
+                    )
                     node_id, was_created = _write_context_node(
                         engine.ctx_dir / "decisions", "D", {
                             "chosen": str(decision["chosen"]),
@@ -1255,11 +1527,16 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                             "considered": [{"object": str(decision["chosen"]), "properties": [], "evaluations": [], "verdict": "proposed"}],
                             "reason": decision.get("reason"),
                             "evidence": quote,
+                            "evidence_ids": [evidence_id],
                             "status": "proposed",
                         }, capture_id, chunk_id, yaml,
                     )
                     if was_created:
                         click.echo(f"    Proposed Decision: {node_id}")
+                        created += 1
+                        chunk_created += 1
+                    if evidence_created:
+                        click.echo(f"    Proposed Evidence: {evidence_id}")
                         created += 1
                         chunk_created += 1
 
@@ -1271,12 +1548,16 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                         continue
                     if not isinstance(boundary.get("path"), str) or not boundary["path"].strip():
                         continue
+                    evidence_id, evidence_created = _write_quote_evidence(
+                        engine, quote, model, today, capture_id, chunk_id, yaml,
+                    )
                     node_id, was_created = _write_boundary_node(
                         engine.ctx_dir / "boundaries.yaml", {
                             "path": boundary["path"].strip(),
                             "rule": boundary.get("rule") or "no_edit_without_approval",
                             "why": boundary.get("why"),
                             "evidence": quote,
+                            "evidence_ids": [evidence_id],
                             "status": "proposed",
                         }, capture_id, chunk_id, yaml,
                     )
@@ -1284,6 +1565,114 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                         click.echo(f"    Proposed Boundary: {node_id}")
                         created += 1
                         chunk_created += 1
+                    if evidence_created:
+                        click.echo(f"    Proposed Evidence: {evidence_id}")
+                        created += 1
+                        chunk_created += 1
+
+                for evidence in evidence_records if "evidence" in types_to_extract else []:
+                    if not isinstance(evidence, dict):
+                        continue
+                    quote = evidence.get("excerpt")
+                    if not isinstance(quote, str) or not quote.strip() or quote not in human_evidence or quote not in redacted_text:
+                        continue
+                    source_type = evidence.get("source_type", "transcript")
+                    if source_type not in ("human", "transcript", "commit", "document", "issue", "test", "other"):
+                        continue
+                    evidence_payload = {
+                        "source_type": source_type,
+                        "locator": evidence.get("locator") or f"{capture_id}:{chunk_id}",
+                        "excerpt": quote,
+                        "captured_by": f"llm:{model}",
+                        "captured_at": today,
+                        "status": "proposed",
+                    }
+                    node_id, was_created = _write_context_node(
+                        engine.ctx_dir / "evidence", "E", evidence_payload,
+                        capture_id, chunk_id, yaml,
+                    )
+                    if was_created:
+                        click.echo(f"    Proposed Evidence: {node_id}")
+                        created += 1
+                        chunk_created += 1
+
+                for node_type, records_to_write, fields in (
+                    ("change", changes, {
+                        "summary": "summary", "files": "files", "implements": "implements",
+                        "affects": "affects", "verification": "verification",
+                    }),
+                    ("question", questions, {"question": "question", "owner": "owner"}),
+                    ("risk", risks, {
+                        "statement": "statement", "likelihood": "likelihood",
+                        "impact": "impact", "mitigation": "mitigation",
+                    }),
+                    ("object", objects, {"name": "name", "kind": "kind", "description": "description"}),
+                ):
+                    if node_type not in types_to_extract:
+                        continue
+                    prefix, folder, model_type, _ = CONTEXT_NODE_CONFIG[node_type]
+                    for candidate in records_to_write:
+                        if not isinstance(candidate, dict):
+                            continue
+                        quote = candidate.get("evidence")
+                        if not isinstance(quote, str) or not quote.strip() or quote not in human_evidence or quote not in redacted_text:
+                            continue
+                        if not candidate.get(fields[next(iter(fields))]):
+                            continue
+                        evidence_id, evidence_created = _write_quote_evidence(
+                            engine, quote, model, today, capture_id, chunk_id, yaml,
+                        )
+                        payload = {
+                            key: candidate.get(source_key)
+                            for key, source_key in fields.items()
+                            if candidate.get(source_key) is not None
+                        }
+                        if node_type == "change":
+                            files = payload.get("files", [])
+                            if files is None:
+                                files = []
+                            elif isinstance(files, str):
+                                files = [files]
+                            if not isinstance(files, list) or any(not isinstance(path, str) for path in files):
+                                continue
+                            payload["files"] = files
+                            payload["implements"] = []
+                            payload["affects"] = []
+                            payload.update({
+                                "commit": None,
+                                "author": f"llm:{model}",
+                                "changed_at": today,
+                                "evidence": [evidence_id],
+                                "status": "proposed",
+                            })
+                        elif node_type == "question":
+                            payload.update({
+                                "requirements": [], "decisions": [], "objects": [],
+                                "evidence": [evidence_id], "status": "proposed",
+                            })
+                        elif node_type == "risk":
+                            payload.update({
+                                "requirements": [], "decisions": [], "changes": [],
+                                "evidence": [evidence_id], "status": "proposed",
+                            })
+                        else:
+                            payload.update({
+                                "properties": candidate.get("properties", []) if isinstance(candidate.get("properties", []), list) else [],
+                                "evidence": [evidence_id],
+                                "status": "proposed",
+                            })
+                        node_id, was_created = _write_context_node(
+                            engine.ctx_dir / folder, prefix, payload,
+                            capture_id, chunk_id, yaml,
+                        )
+                        if evidence_created:
+                            click.echo(f"    Proposed Evidence: {evidence_id}")
+                            created += 1
+                            chunk_created += 1
+                        if was_created:
+                            click.echo(f"    Proposed {node_type.title()}: {node_id}")
+                            created += 1
+                            chunk_created += 1
 
                 completed_types.update(types_to_extract)
                 if set(("requirement", "decision", "boundary")).issubset(completed_types):
@@ -1365,7 +1754,8 @@ def handoff(previous_tool, next_tool, dir, output):
     context_files = [engine.base_dir / "AGENTS.md", engine.ctx_dir / "project.md", engine.ctx_dir / "manifest.yaml"]
     context_files.extend(sorted((engine.ctx_dir / "requirements").glob("*.yaml")))
     context_files.extend(sorted((engine.ctx_dir / "decisions").glob("*.yaml")))
-    context_files.extend(sorted((engine.ctx_dir / "questions").glob("*.yaml")))
+    for folder in ("objects", "evidence", "changes", "questions", "risks"):
+        context_files.extend(sorted((engine.ctx_dir / folder).glob("*.yaml")))
     context_files.extend(sorted((engine.ctx_dir / "questions").glob("*.md")))
     context_files.extend([engine.ctx_dir / "boundaries.yaml", engine.ctx_dir / "state" / "current.yaml"])
     sections = [
@@ -1563,7 +1953,11 @@ def hook(event):
 def _mcp_context(engine, tool_name, arguments):
     yaml = YAML()
     if tool_name == "get_context":
-        result = {"requirements": [], "decisions": [], "boundaries": [], "current_state": None}
+        result = {
+            "requirements": [], "decisions": [], "boundaries": [], "objects": [],
+            "evidence": [], "changes": [], "questions": [], "risks": [],
+            "current_state": None,
+        }
         req_dir = engine.ctx_dir / "requirements"
         if req_dir.exists():
             for path in sorted(req_dir.glob("*.yaml")):
@@ -1584,6 +1978,20 @@ def _mcp_context(engine, tool_name, arguments):
                 item for item in boundaries
                 if isinstance(item, dict) and item.get("status") not in ("proposed", "rejected")
             ]
+        active_statuses = {
+            "objects": ({"active"}, "active"),
+            "evidence": ({"active"}, "active"),
+            "changes": ({"active"}, "proposed"),
+            "questions": ({"open", "deferred"}, "open"),
+            "risks": ({"open", "mitigated", "accepted"}, "open"),
+        }
+        for kind, (statuses, default_status) in active_statuses.items():
+            directory = engine.ctx_dir / kind
+            if directory.is_dir():
+                for path in sorted(directory.glob("*.yaml")):
+                    node = yaml.load(path.read_text(encoding="utf-8"))
+                    if node and node.get("status", default_status) in statuses:
+                        result[kind].append(node)
         current_path = engine.ctx_dir / "state" / "current.yaml"
         if current_path.exists():
             result["current_state"] = current_path.read_text(encoding="utf-8")
@@ -1618,6 +2026,29 @@ def _mcp_context(engine, tool_name, arguments):
                 if not query or query in haystack:
                     decisions.append(node)
         return decisions
+
+    if tool_name == "list_context_nodes":
+        node_type = arguments.get("type")
+        collections = {
+            "requirements": ("requirements", {"active", "proposed"}, "active"),
+            "decisions": ("decisions", {"active", "needs_review", "proposed"}, "active"),
+            "objects": ("objects", {"active", "proposed"}, "active"),
+            "evidence": ("evidence", {"active", "proposed"}, "active"),
+            "changes": ("changes", {"active", "proposed"}, "proposed"),
+            "questions": ("questions", {"open", "deferred", "proposed"}, "open"),
+            "risks": ("risks", {"open", "mitigated", "accepted", "proposed"}, "open"),
+        }
+        if node_type not in collections:
+            raise ValueError("type must be one of: " + ", ".join(collections))
+        folder, statuses, default_status = collections[node_type]
+        directory = engine.ctx_dir / folder
+        records = []
+        if directory.is_dir():
+            for path in sorted(directory.glob("*.yaml")):
+                node = yaml.load(path.read_text(encoding="utf-8"))
+                if node and node.get("status", default_status) in statuses:
+                    records.append(node)
+        return records
     raise ValueError(f"Unknown tool: {tool_name}")
 
 
@@ -1627,9 +2058,10 @@ def mcp(dir):
     """Run the Konman read-only Model Context Protocol server over stdio."""
     engine = ContextEngine(dir)
     tools = [
-        {"name": "get_context", "description": "Read active project requirements, decisions, boundaries, and current state.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+        {"name": "get_context", "description": "Read active project requirements, decisions, boundaries, objects, evidence, changes, questions, risks, and current state.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
         {"name": "get_boundaries", "description": "List protected paths, optionally filtered to a path.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "additionalProperties": False}},
         {"name": "search_decisions", "description": "Search recorded decisions by text.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "additionalProperties": False}},
+        {"name": "list_context_nodes", "description": "List active and proposed records for a context node type.", "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "enum": ["requirements", "decisions", "objects", "evidence", "changes", "questions", "risks"]}}, "required": ["type"], "additionalProperties": False}},
     ]
 
     def send(message):

@@ -17,16 +17,33 @@ from konman.storage import atomic_write_bytes, atomic_write_text
 _NODE_FIELDS = {
     "requirements": (
         "id", "statement", "kind", "priority", "source", "why",
-        "derives_from", "status", "added", "evidence", "review",
+        "derives_from", "status", "added", "evidence", "evidence_ids", "review",
         "rejection_reason",
     ),
     "decisions": (
         "id", "chosen", "mode", "decided", "considered", "tradeoff",
-        "reason", "status", "evidence", "review", "rejection_reason",
+        "reason", "status", "evidence", "evidence_ids", "review", "rejection_reason",
     ),
     "boundaries": (
         "id", "path", "constrains", "rule", "why", "status",
-        "evidence", "review", "rejection_reason",
+        "evidence", "evidence_ids", "review", "rejection_reason",
+    ),
+    "objects": ("id", "name", "kind", "description", "properties", "evidence", "status"),
+    "evidence": (
+        "id", "source_type", "locator", "excerpt", "captured_by",
+        "captured_at", "related_nodes", "status",
+    ),
+    "changes": (
+        "id", "summary", "commit", "author", "changed_at", "files",
+        "implements", "affects", "evidence", "verification", "status",
+    ),
+    "questions": (
+        "id", "question", "status", "answer", "owner", "requirements",
+        "decisions", "objects", "evidence", "resolution",
+    ),
+    "risks": (
+        "id", "statement", "likelihood", "impact", "mitigation", "status",
+        "requirements", "decisions", "changes", "evidence", "resolution",
     ),
 }
 
@@ -127,6 +144,15 @@ def render_context_markdown(engine: ContextEngine) -> str:
     boundary_nodes = _read_boundaries(engine.ctx_dir / "boundaries.yaml")
     boundary_nodes.sort(key=lambda node: str(node.get("id") or node.get("path") or ""))
     lines.extend(_node_section("Protected Boundaries", boundary_nodes, "path"))
+    for kind, title, label in (
+        ("objects", "Tracked Objects", "name"),
+        ("evidence", "Evidence", "excerpt"),
+        ("changes", "Changes", "summary"),
+        ("questions", "Questions", "question"),
+        ("risks", "Risks", "statement"),
+    ):
+        nodes = _yaml_files(engine.ctx_dir / kind, _NODE_FIELDS[kind])
+        lines.extend(_node_section(title, nodes, label))
 
     state_path = engine.ctx_dir / "state" / "current.yaml"
     lines.extend(["## Current State", ""])
@@ -136,27 +162,22 @@ def render_context_markdown(engine: ContextEngine) -> str:
     else:
         lines.extend(["No current state recorded.", ""])
 
-    question_files = []
+    legacy_question_files = []
     question_dir = engine.ctx_dir / "questions"
     if question_dir.is_dir():
-        question_files = sorted(
+        legacy_question_files = sorted(
             path for path in question_dir.iterdir()
-            if path.is_file() and path.suffix.lower() in {".yaml", ".yml", ".md"}
+            if path.is_file() and path.suffix.lower() == ".md"
         )
-    lines.extend(["## Open Questions", ""])
-    if not question_files:
-        lines.extend(["No open questions recorded.", ""])
-    else:
-        for path in question_files:
+    if legacy_question_files:
+        lines.extend(["## Legacy Question Notes", ""])
+        for path in legacy_question_files:
             lines.extend([f"### {path.name}", ""])
-            if path.suffix.lower() in {".yaml", ".yml"}:
-                lines.extend([_yaml_block({"question_data": _read_yaml(path)}), ""])
-            else:
-                try:
-                    text = path.read_text(encoding="utf-8").strip()
-                except OSError as error:
-                    raise ValueError(f"Cannot read question from {path}: {error}") from error
-                lines.extend([text or "Empty question document.", ""])
+            try:
+                text = path.read_text(encoding="utf-8").strip()
+            except OSError as error:
+                raise ValueError(f"Cannot read question from {path}: {error}") from error
+            lines.extend([text or "Empty question document.", ""])
 
     return "\n".join(lines).rstrip() + "\n"
 

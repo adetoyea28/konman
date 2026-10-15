@@ -12,6 +12,7 @@ class Requirement(BaseModel):
     derives_from: Optional[str] = None
     status: Literal["active", "proposed", "rejected", "superseded", "disproven"] = "active"
     added: Optional[Literal["standard", "retroactive"]] = "standard"
+    evidence_ids: List[str] = Field(default_factory=list)
 
 class Property(BaseModel):
     key: str
@@ -22,9 +23,11 @@ class Evaluation(BaseModel):
     req: str
     result: Literal["pass", "fail", "partial"]
     via: str
+    object_id: Optional[str] = None
 
 class ConsideredObject(BaseModel):
     object: str
+    object_id: Optional[str] = None
     properties: List[Property] = Field(default_factory=list)
     evaluations: List[Evaluation] = Field(default_factory=list)
     verdict: Literal["selected", "rejected", "proposed"]
@@ -38,6 +41,7 @@ class Decision(BaseModel):
     tradeoff: Optional[str] = None
     reason: Optional[str] = None
     status: Literal["active", "proposed", "rejected", "needs_review", "superseded"] = "active"
+    evidence_ids: List[str] = Field(default_factory=list)
 
 class BoundaryRule(BaseModel):
     id: Optional[str] = None
@@ -45,3 +49,63 @@ class BoundaryRule(BaseModel):
     constrains: List[str] = Field(default_factory=list)
     rule: str = "no_edit_without_approval"
     why: Optional[str] = None
+    status: Literal["active", "proposed", "rejected"] = "active"
+    evidence: Optional[str] = None
+    evidence_ids: List[str] = Field(default_factory=list)
+
+class Evidence(BaseModel):
+    id: str
+    source_type: Literal["human", "transcript", "commit", "document", "issue", "test", "other"]
+    locator: Optional[str] = None
+    excerpt: Optional[str] = None
+    captured_by: Optional[str] = None
+    captured_at: Optional[Union[str, date, datetime]] = None
+    related_nodes: List[str] = Field(default_factory=list)
+    status: Literal["active", "proposed", "rejected"] = "active"
+
+class Change(BaseModel):
+    id: str
+    summary: str
+    commit: Optional[str] = None
+    author: Optional[str] = None
+    changed_at: Optional[Union[str, date, datetime]] = None
+    files: List[str] = Field(default_factory=list)
+    implements: List[str] = Field(default_factory=list)
+    affects: List[str] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
+    verification: Optional[str] = None
+    status: Literal["proposed", "active", "rejected"] = "proposed"
+
+class Question(BaseModel):
+    id: str
+    question: str
+    status: Literal["proposed", "open", "answered", "deferred", "rejected"] = "open"
+    answer: Optional[str] = None
+    owner: Optional[str] = None
+    requirements: List[str] = Field(default_factory=list)
+    decisions: List[str] = Field(default_factory=list)
+    objects: List[str] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
+    resolution: Optional[str] = None
+
+class Risk(BaseModel):
+    id: str
+    statement: str
+    likelihood: Optional[Literal["low", "medium", "high"]] = None
+    impact: Optional[Literal["low", "medium", "high"]] = None
+    mitigation: Optional[str] = None
+    status: Literal["proposed", "open", "mitigated", "accepted", "closed", "rejected"] = "open"
+    requirements: List[str] = Field(default_factory=list)
+    decisions: List[str] = Field(default_factory=list)
+    changes: List[str] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
+    resolution: Optional[str] = None
+
+class ContextObject(BaseModel):
+    id: str
+    name: str
+    kind: Optional[str] = None
+    description: Optional[str] = None
+    properties: List[Property] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
+    status: Literal["proposed", "active", "retired", "rejected"] = "active"

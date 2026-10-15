@@ -25,6 +25,7 @@ from konman.config import (
     save_global_api_credentials,
 )
 from konman.engine import ContextEngine
+from konman.context_graph import ContextDataError, ConcurrentEditError, ContextWorkspace, build_graph
 from konman.transcripts import parse_record
 
 
@@ -61,6 +62,10 @@ class CommandFixTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         node = (engine.ctx_dir / "requirements" / "R-001.yaml").read_text(encoding="utf-8")
         self.assertIn("status: proposed", node)
+        requirement = YAML().load(node)
+        self.assertEqual(len(requirement["evidence_ids"]), 1)
+        evidence_path = engine.ctx_dir / "evidence" / f"{requirement['evidence_ids'][0]}.yaml"
+        self.assertTrue(evidence_path.is_file())
         self.assertFalse((engine.ctx_dir / "requirements" / "R-002.yaml").exists())
 
     def test_extract_can_select_boundary_nodes_only(self):
@@ -94,6 +99,47 @@ class CommandFixTests(unittest.TestCase):
         self.assertEqual(boundaries[0]["status"], "proposed")
         self.assertFalse(list((engine.ctx_dir / "requirements").glob("R-*.yaml")))
         self.assertFalse(list((engine.ctx_dir / "decisions").glob("D-*.yaml")))
+
+    def test_extract_supports_all_context_node_types_with_evidence_links(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        quote = "Keep existing sessions compatible."
+        (engine.ctx_dir / ".raw" / "hook.json").write_text(
+            json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": quote}),
+            encoding="utf-8",
+        )
+        response = json.dumps({
+            "requirements": [{"statement": "Preserve session compatibility", "kind": "hard", "evidence": quote}],
+            "decisions": [{"chosen": "Session token", "mode": "default", "reason": "Stable identifiers.", "evidence": quote}],
+            "boundaries": [{"path": "src/session.py", "rule": "no_edit_without_approval", "evidence": quote}],
+            "evidence": [{"source_type": "transcript", "excerpt": quote}],
+            "changes": [{"summary": "Keep session parsing compatible", "files": "src/session.py", "evidence": quote}],
+            "questions": [{"question": "Which legacy formats are required?", "evidence": quote}],
+            "risks": [{"statement": "Legacy sessions could fail to load.", "likelihood": "medium", "impact": "high", "evidence": quote}],
+            "objects": [{"name": "Session token", "kind": "identifier", "description": "Stable session identifier.", "evidence": quote}],
+        })
+        with patch.object(ContextEngine, "execute_llm_distillation", return_value=response):
+            result = self.runner.invoke(
+                cli.main, ["extract", "--api-key", "test-key", "--dir", str(self.root)]
+            )
+        self.assertEqual(result.exit_code, 0, result.output)
+        expected_files = {
+            "requirements": "R-001.yaml",
+            "decisions": "D-001.yaml",
+            "evidence": "E-001.yaml",
+            "changes": "C-001.yaml",
+            "questions": "Q-001.yaml",
+            "risks": "X-001.yaml",
+            "objects": "O-001.yaml",
+        }
+        for folder, filename in expected_files.items():
+            self.assertTrue((engine.ctx_dir / folder / filename).is_file(), folder)
+        boundaries = YAML().load((engine.ctx_dir / "boundaries.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(boundaries[0]["id"], "B-001")
+        self.assertEqual(YAML().load((engine.ctx_dir / "requirements" / "R-001.yaml").read_text())["evidence_ids"], ["E-001"])
+        change = YAML().load((engine.ctx_dir / "changes" / "C-001.yaml").read_text())
+        self.assertEqual(change["files"], ["src/session.py"])
+        self.assertEqual(engine.check_graph_validity(), [])
 
     def test_extract_can_process_another_type_from_a_completed_capture(self):
         engine = ContextEngine(str(self.root))
@@ -227,6 +273,26 @@ class CommandFixTests(unittest.TestCase):
         (engine.ctx_dir / "questions" / "Q-001.md").write_text(
             "Should API keys support rotation?\n", encoding="utf-8"
         )
+        (engine.ctx_dir / "questions" / "Q-001.yaml").write_text(
+            "id: Q-001\nquestion: Can clients rotate keys?\nstatus: open\n",
+            encoding="utf-8",
+        )
+        (engine.ctx_dir / "objects" / "O-001.yaml").write_text(
+            "id: O-001\nname: API key\nkind: credential\nstatus: active\n",
+            encoding="utf-8",
+        )
+        (engine.ctx_dir / "evidence" / "E-001.yaml").write_text(
+            "id: E-001\nsource_type: test\nexcerpt: Key rotation is covered.\nstatus: active\n",
+            encoding="utf-8",
+        )
+        (engine.ctx_dir / "changes" / "C-001.yaml").write_text(
+            "id: C-001\nsummary: Add key rotation\nstatus: proposed\n",
+            encoding="utf-8",
+        )
+        (engine.ctx_dir / "risks" / "X-001.yaml").write_text(
+            "id: X-001\nstatement: Clients may lose access during rotation.\nstatus: open\n",
+            encoding="utf-8",
+        )
         (engine.ctx_dir / ".raw" / "capture.json").write_text(
             '{"prompt":"raw-capture-secret"}', encoding="utf-8"
         )
@@ -245,6 +311,11 @@ class CommandFixTests(unittest.TestCase):
             "src/auth.py",
             "Refactoring authentication",
             "Should API keys support rotation?",
+            "Can clients rotate keys?",
+            "API key",
+            "Key rotation is covered.",
+            "Add key rotation",
+            "Clients may lose access during rotation.",
         ):
             self.assertIn(expected, document)
         self.assertNotIn("internal-capture-metadata", document)
@@ -391,6 +462,9 @@ class CommandFixTests(unittest.TestCase):
             "id: R-001\nstatement: Keep dates serializable\nkind: hard\nstatus: active\nsource:\n  when: 2026-10-13\n",
             encoding="utf-8",
         )
+        (engine.ctx_dir / "objects" / "O-001.yaml").write_text(
+            "id: O-001\nname: API service\nstatus: active\n", encoding="utf-8"
+        )
         messages = "\n".join([
             json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}}),
             json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
@@ -403,6 +477,8 @@ class CommandFixTests(unittest.TestCase):
         self.assertIn("get_context", [tool["name"] for tool in replies[1]["result"]["tools"]])
         context = json.loads(replies[2]["result"]["content"][0]["text"])
         self.assertEqual(context["requirements"][0]["source"]["when"], "2026-10-13")
+        self.assertEqual(context["objects"][0]["name"], "API service")
+        self.assertEqual(cli._mcp_context(engine, "list_context_nodes", {"type": "objects"})[0]["id"], "O-001")
 
     def test_tail_discovers_nested_vscode_extension_logs(self):
         appdata = self.root / "appdata"
@@ -731,8 +807,8 @@ class CommandFixTests(unittest.TestCase):
         self.assertIn("konman config --migrate", result.output)
 
     def test_record_appends_boundaries_and_refuses_duplicate_ids(self):
-        first = self.runner.invoke(cli.main, ["record", "--type", "boundary", "--id", "B-001", "--dir", str(self.root)], input="src/one\nProtect one\n")
-        second = self.runner.invoke(cli.main, ["record", "--type", "boundary", "--id", "B-002", "--dir", str(self.root)], input="src/two\nProtect two\n")
+        first = self.runner.invoke(cli.main, ["record", "--type", "boundary", "--id", "B-001", "--dir", str(self.root)], input="src/one\nProtect one\n\n")
+        second = self.runner.invoke(cli.main, ["record", "--type", "boundary", "--id", "B-002", "--dir", str(self.root)], input="src/two\nProtect two\n\n")
         self.assertEqual(first.exit_code, 0, first.output)
         self.assertEqual(second.exit_code, 0, second.output)
         boundaries = YAML().load((self.root / ".context" / "boundaries.yaml").read_text(encoding="utf-8"))
@@ -753,6 +829,218 @@ class CommandFixTests(unittest.TestCase):
         self.assertEqual(args[0][1:3], ["log", "-n"])
         self.assertEqual(args[0][3], "4")
         self.assertTrue(Path(kwargs["cwd"]).samefile(self.root))
+
+    def test_mined_commit_creates_deduplicated_proposed_change_and_evidence(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        result = types.SimpleNamespace(
+            stdout="a" * 40 + "\x1fDev User\x1f2026-01-02\x1fFixes auth because token validation was missing.\x1e"
+        )
+        with patch("subprocess.run", return_value=result):
+            first_count = engine.mine_git_history(1)
+            second_count = engine.mine_git_history(1)
+        self.assertEqual(first_count, 1)
+        self.assertEqual(second_count, 0)
+        changes = list((engine.ctx_dir / "changes").glob("C-*.yaml"))
+        evidence = list((engine.ctx_dir / "evidence").glob("E-*.yaml"))
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(len(evidence), 1)
+        change = YAML().load(changes[0].read_text(encoding="utf-8"))
+        proof = YAML().load(evidence[0].read_text(encoding="utf-8"))
+        self.assertEqual(change["status"], "proposed")
+        self.assertEqual(change["evidence"], [proof["id"]])
+        self.assertEqual(proof["source_type"], "commit")
+
+    def test_check_validates_new_context_node_relationships(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        nodes = {
+            "evidence": [{
+                "id": "E-001", "source_type": "document", "excerpt": "API contract",
+                "related_nodes": ["R-001", "D-001", "O-001"], "status": "active",
+            }],
+            "objects": [{
+                "id": "O-001", "name": "Public API", "evidence": ["E-001"], "status": "active",
+            }],
+            "requirements": [{
+                "id": "R-001", "statement": "Keep API stable", "kind": "hard",
+                "evidence_ids": ["E-001"], "status": "active",
+            }],
+            "decisions": [{
+                "id": "D-001", "chosen": "Public API", "mode": "default", "status": "active",
+                "considered": [{
+                    "object": "Public API", "object_id": "O-001", "verdict": "selected",
+                }],
+            }],
+            "changes": [{
+                "id": "C-001", "summary": "Preserve API contract", "implements": ["D-001"],
+                "affects": ["R-001"], "evidence": ["E-001"], "status": "active",
+            }],
+            "questions": [{
+                "id": "Q-001", "question": "Which clients need support?", "objects": ["O-001"],
+                "evidence": ["E-001"], "status": "open",
+            }],
+            "risks": [{
+                "id": "X-001", "statement": "Breaking clients", "changes": ["C-001"],
+                "evidence": ["E-001"], "status": "open",
+            }],
+        }
+        from io import StringIO
+        for folder, items in nodes.items():
+            for item in items:
+                serialized = StringIO()
+                engine.yaml.dump(item, serialized)
+                (engine.ctx_dir / folder / f"{item['id']}.yaml").write_text(
+                    serialized.getvalue(), encoding="utf-8"
+                )
+        serialized = StringIO()
+        engine.yaml.dump(
+            [{"id": "B-001", "path": "src/auth.py", "constrains": ["R-001"], "evidence_ids": ["E-001"]}],
+            serialized,
+        )
+        (engine.ctx_dir / "boundaries.yaml").write_text(serialized.getvalue(), encoding="utf-8")
+        self.assertEqual(engine.check_graph_validity(), [])
+
+        risk_path = engine.ctx_dir / "risks" / "X-001.yaml"
+        risk_path.write_text(risk_path.read_text(encoding="utf-8").replace("C-001", "C-999"), encoding="utf-8")
+        self.assertTrue(any("missing change 'C-999'" in issue for issue in engine.check_graph_validity()))
+
+    def test_question_risk_resolution_and_decision_resolution_without_action_flag(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        (engine.ctx_dir / "questions" / "Q-001.yaml").write_text(
+            "id: Q-001\nquestion: Which API version?\nstatus: open\n", encoding="utf-8"
+        )
+        (engine.ctx_dir / "risks" / "X-001.yaml").write_text(
+            "id: X-001\nstatement: Compatibility regression\nstatus: open\n", encoding="utf-8"
+        )
+        decision = engine.ctx_dir / "decisions" / "D-001.yaml"
+        decision.write_text(
+            "id: D-001\nchosen: SQLite\nmode: default\nstatus: needs_review\nconsidered: []\n",
+            encoding="utf-8",
+        )
+        answered = self.runner.invoke(
+            cli.main, ["resolve", "Q-001", "--answer", "Use v2", "--dir", str(self.root)]
+        )
+        mitigated = self.runner.invoke(
+            cli.main, ["resolve", "X-001", "--mitigate", "Add a compatibility test", "--dir", str(self.root)]
+        )
+        decision_result = self.runner.invoke(
+            cli.main, ["resolve", "D-001", "--dir", str(self.root)], input="Reviewed rationale\ny\n"
+        )
+        self.assertEqual(answered.exit_code, 0, answered.output)
+        self.assertEqual(mitigated.exit_code, 0, mitigated.output)
+        self.assertEqual(decision_result.exit_code, 0, decision_result.output)
+        self.assertEqual(YAML().load((engine.ctx_dir / "questions" / "Q-001.yaml").read_text())["status"], "answered")
+        self.assertEqual(YAML().load((engine.ctx_dir / "risks" / "X-001.yaml").read_text())["status"], "mitigated")
+        self.assertEqual(YAML().load(decision.read_text())["status"], "active")
+        agents = (self.root / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertNotIn("Which API version?", agents)
+        self.assertIn("[MITIGATED]", agents)
+
+    def test_review_approves_proposed_change(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        change = engine.ctx_dir / "changes" / "C-001.yaml"
+        change.write_text("id: C-001\nsummary: Add API test\nstatus: proposed\n", encoding="utf-8")
+        result = self.runner.invoke(
+            cli.main, ["review", "--id", "C-001", "--approve", "--yes", "--dir", str(self.root)]
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(YAML().load(change.read_text(encoding="utf-8"))["status"], "active")
+
+    def test_context_graph_builds_typed_relationships(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        workspace = ContextWorkspace(engine)
+        evidence_id, _ = workspace.save("evidence", {
+            "source_type": "document", "excerpt": "API must remain stable.", "status": "active",
+        })
+        requirement_id, _ = workspace.save("requirement", {
+            "statement": "Keep API stable", "kind": "hard", "evidence_ids": [evidence_id],
+        })
+        object_id, _ = workspace.save("object", {"name": "Public API", "evidence": [evidence_id]})
+        decision_id, _ = workspace.save("decision", {
+            "chosen": "Public API",
+            "mode": "default",
+            "considered": [{
+                "object": "Public API", "object_id": object_id, "verdict": "selected",
+                "evaluations": [{
+                    "req": requirement_id, "result": "pass", "via": "contract",
+                    "object_id": object_id,
+                }],
+            }],
+            "evidence_ids": [evidence_id],
+        })
+        boundary_id, _ = workspace.save("boundary", {
+            "path": "src/api.py", "constrains": [requirement_id],
+            "evidence_ids": [evidence_id], "status": "active",
+        })
+        snapshot = workspace.load()
+        nodes, edges = build_graph(snapshot)
+        self.assertEqual({node["id"] for node in nodes}, {
+            evidence_id, requirement_id, object_id, decision_id, boundary_id,
+        })
+        links = {(edge["source"], edge["target"], edge["label"]) for edge in edges}
+        self.assertIn((requirement_id, evidence_id, "supported by"), links)
+        self.assertIn((decision_id, requirement_id, "evaluates: pass"), links)
+        self.assertIn((decision_id, object_id, "considers"), links)
+        self.assertIn((boundary_id, requirement_id, "constrains"), links)
+        self.assertEqual(engine.check_graph_validity(), [])
+
+    def test_context_workspace_validates_saves_and_detects_concurrent_edits(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        workspace = ContextWorkspace(engine)
+        evidence_id, _ = workspace.save("evidence", {
+            "source_type": "test", "excerpt": "This is verified.", "status": "active",
+        })
+        requirement_id, _ = workspace.save("requirement", {
+            "statement": "Preserve verified behavior",
+            "kind": "hard",
+            "evidence_ids": [evidence_id],
+        })
+        snapshot = workspace.load()
+        edited = dict(snapshot.records["requirement"][requirement_id])
+        edited["why"] = "Avoid regressions."
+        requirement_path = engine.ctx_dir / "requirements" / f"{requirement_id}.yaml"
+        requirement_path.write_text(
+            requirement_path.read_text(encoding="utf-8") + "# concurrent modification\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(ConcurrentEditError):
+            workspace.save(
+                "requirement", edited, node_id=requirement_id,
+                expected_token=snapshot.tokens[("requirement", requirement_id)],
+            )
+        with self.assertRaises(ContextDataError):
+            workspace.save("question", {
+                "question": "Which requirement?",
+                "requirements": ["R-999"],
+                "status": "open",
+            })
+        self.assertFalse((engine.ctx_dir / "questions" / "Q-001.yaml").exists())
+
+    def test_gui_command_binds_localhost_and_passes_project_path(self):
+        with patch("konman.cli.importlib.util.find_spec", return_value=object()), patch(
+            "konman.cli.subprocess.run", return_value=types.SimpleNamespace(returncode=0)
+        ) as run:
+            result = self.runner.invoke(
+                cli.main, ["gui", "--dir", str(self.root), "--port", "8765", "--no-browser"]
+            )
+        self.assertEqual(result.exit_code, 0, result.output)
+        args, kwargs = run.call_args
+        self.assertIn("--server.address=127.0.0.1", args[0])
+        self.assertIn("--server.port=8765", args[0])
+        self.assertIn("--server.headless=true", args[0])
+        self.assertEqual(args[0][-2:], ["--dir", str(self.root.resolve())])
+        self.assertEqual(kwargs["cwd"], self.root.resolve())
+
+    def test_gui_command_explains_optional_dependency(self):
+        with patch("konman.cli.importlib.util.find_spec", return_value=None):
+            result = self.runner.invoke(cli.main, ["gui", "--dir", str(self.root)])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn('pip install "konman[gui]"', result.output)
 
     def test_llm_response_parsing_uses_chat_completions_shape(self):
         class Response:

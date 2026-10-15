@@ -4,7 +4,9 @@ import re
 from pathlib import Path
 from ruamel.yaml import YAML
 from konman.storage import atomic_write_text, atomic_write_yaml, ensure_raw_ignored, is_raw_ignored
-from konman.models import BoundaryRule, Decision, Requirement
+from konman.models import (
+    BoundaryRule, Change, ContextObject, Decision, Evidence, Question, Requirement, Risk,
+)
 from konman.redaction import redact_text
 
 class ContextEngine:
@@ -17,7 +19,7 @@ class ContextEngine:
     def init_folders(self):
         """Scaffold the .context storage layout matrix folder database."""
         folders = [
-            "requirements", "decisions", "objects", 
+            "requirements", "decisions", "objects", "evidence", "changes", "risks",
             "state/history", ".raw", "questions"
         ]
         for f in folders:
@@ -143,41 +145,186 @@ class ContextEngine:
                         violations.append(f"Decision '{decision_id}' depends on stale requirement '{requirement_id}' and needs review.")
 
         boundaries_path = self.ctx_dir / "boundaries.yaml"
+        object_nodes = self._load_node_collection("objects", ContextObject, "O")
+        evidence_nodes = self._load_node_collection("evidence", Evidence, "E")
+        change_nodes = self._load_node_collection("changes", Change, "C")
+        question_nodes = self._load_node_collection("questions", Question, "Q")
+        risk_nodes = self._load_node_collection("risks", Risk, "X")
+        records = {
+            "requirements": nodes["requirements"],
+            "decisions": nodes["decisions"],
+            "objects": object_nodes,
+            "evidence": evidence_nodes,
+            "changes": change_nodes,
+            "questions": question_nodes,
+            "risks": risk_nodes,
+            "boundaries": {},
+        }
+        for kind, collection in (
+            ("objects", object_nodes),
+            ("evidence", evidence_nodes),
+            ("changes", change_nodes),
+            ("questions", question_nodes),
+            ("risks", risk_nodes),
+        ):
+            prefix, model = {
+                "objects": ("O", ContextObject),
+                "evidence": ("E", Evidence),
+                "changes": ("C", Change),
+                "questions": ("Q", Question),
+                "risks": ("X", Risk),
+            }[kind]
+            folder = self.ctx_dir / kind
+            if not folder.is_dir():
+                continue
+            seen_ids = set()
+            for path in sorted(folder.glob("*.yaml")):
+                try:
+                    item = self.yaml.load(path.read_text(encoding="utf-8"))
+                    node_id = item.get("id") if isinstance(item, dict) else None
+                    if not re.fullmatch(rf"{prefix}-\d+", str(node_id or "")):
+                        violations.append(f"{path.relative_to(self.base_dir)} ID must use the form {prefix}-001.")
+                    if path.stem != node_id:
+                        violations.append(f"{path.relative_to(self.base_dir)} filename does not match id '{node_id}'.")
+                    model.model_validate(item)
+                    if node_id in seen_ids:
+                        violations.append(f"Duplicate {kind[:-1]} ID '{node_id}'.")
+                    seen_ids.add(node_id)
+                    if isinstance(item, dict) and item.get("status") == "proposed" and strict:
+                        violations.append(f"{kind[:-1].title()} '{node_id}' is awaiting review.")
+                except Exception as error:
+                    violations.append(f"Invalid {path.relative_to(self.base_dir)}: {error}")
+
         if boundaries_path.exists():
             try:
-                boundaries = self.yaml.load(boundaries_path.read_text(encoding="utf-8")) or []
-                if isinstance(boundaries, dict):
-                    boundaries = [boundaries]
-                if not isinstance(boundaries, list):
+                boundary_values = self.yaml.load(boundaries_path.read_text(encoding="utf-8")) or []
+                boundary_values = [boundary_values] if isinstance(boundary_values, dict) else boundary_values
+                if not isinstance(boundary_values, list):
                     violations.append("boundaries.yaml must contain a list or mapping.")
                 else:
                     boundary_ids = set()
-                    for index, boundary in enumerate(boundaries):
+                    for index, boundary in enumerate(boundary_values):
                         if not isinstance(boundary, dict):
                             violations.append(f"Invalid boundary entry {index + 1}: expected a mapping.")
                             continue
                         try:
                             BoundaryRule.model_validate(boundary)
                             boundary_id = boundary.get("id")
-                            if boundary_id and not re.fullmatch(r"B-\d+", boundary_id):
-                                violations.append(f"Boundary entry {index + 1} ID must use the form B-001.")
-                            if boundary_id and boundary_id in boundary_ids:
-                                violations.append(f"Duplicate boundary ID '{boundary_id}'.")
                             if boundary_id:
+                                if not re.fullmatch(r"B-\d+", boundary_id):
+                                    violations.append(f"Boundary entry {index + 1} ID must use the form B-001.")
+                                if boundary_id in boundary_ids:
+                                    violations.append(f"Duplicate boundary ID '{boundary_id}'.")
                                 boundary_ids.add(boundary_id)
+                                records["boundaries"][boundary_id] = boundary
                             if boundary.get("status") == "proposed" and strict:
                                 violations.append(f"Boundary '{boundary_id or boundary.get('path')}' is awaiting review.")
-                            for requirement_id in boundary.get("constrains", []):
-                                if requirement_id not in nodes["requirements"]:
-                                    violations.append(f"Boundary '{boundary_id or boundary.get('path')}' references missing requirement '{requirement_id}'.")
+                            self._validate_references(
+                                violations, f"Boundary '{boundary_id or boundary.get('path')}'",
+                                {
+                                    "requirements": boundary.get("constrains", []),
+                                    "evidence": boundary.get("evidence_ids", []),
+                                },
+                                records,
+                            )
                         except Exception as error:
                             violations.append(f"Invalid boundary entry {index + 1}: {error}")
             except Exception as error:
                 violations.append(f"Invalid boundaries.yaml: {error}")
+        for kind, collection in records.items():
+            for node_id, node in collection.items():
+                evidence_ids = node.get("evidence_ids", []) if isinstance(node, dict) else []
+                if evidence_ids:
+                    self._validate_references(
+                        violations, f"{kind[:-1].title()} '{node_id}'",
+                        {"evidence": evidence_ids}, records,
+                    )
+        for node_id, decision in nodes["decisions"].items():
+            for considered in decision.get("considered", []) or []:
+                if not isinstance(considered, dict):
+                    continue
+                if considered.get("object_id") and considered["object_id"] not in object_nodes:
+                    violations.append(f"Decision '{node_id}' references missing object '{considered['object_id']}'.")
+                for evaluation in considered.get("evaluations", []) or []:
+                    if isinstance(evaluation, dict) and evaluation.get("object_id") and evaluation["object_id"] not in object_nodes:
+                        violations.append(f"Decision '{node_id}' evaluation references missing object '{evaluation['object_id']}'.")
+            self._validate_references(
+                violations, f"Decision '{node_id}'",
+                {"evidence": decision.get("evidence_ids", [])}, records,
+            )
+        for requirement_id, requirement in nodes["requirements"].items():
+            derived_from = requirement.get("derives_from")
+            if derived_from and derived_from not in nodes["requirements"]:
+                violations.append(f"Requirement '{requirement_id}' references missing source requirement '{derived_from}'.")
+        for kind, collection in (
+            ("objects", object_nodes),
+            ("evidence", evidence_nodes),
+            ("changes", change_nodes),
+            ("questions", question_nodes),
+            ("risks", risk_nodes),
+        ):
+            for node_id, node in collection.items():
+                self._validate_references(violations, f"{kind[:-1].title()} '{node_id}'", node, records)
         return violations
 
+    def _load_node_collection(self, kind: str, model, prefix: str) -> dict:
+        folder = self.ctx_dir / kind
+        records = {}
+        if not folder.is_dir():
+            return records
+        for path in sorted(folder.glob("*.yaml")):
+            try:
+                node = self.yaml.load(path.read_text(encoding="utf-8"))
+                if isinstance(node, dict) and isinstance(node.get("id"), str):
+                    records[node["id"]] = node
+            except Exception:
+                continue
+        return records
+
+    @staticmethod
+    def _validate_references(violations, owner, node, collections):
+        references = {
+            "requirements": node.get("requirements", []),
+            "decisions": node.get("decisions", []),
+            "objects": node.get("objects", []),
+            "changes": node.get("changes", []),
+            "evidence": node.get("evidence", []),
+            "related_nodes": node.get("related_nodes", []),
+        }
+        for collection_name, ids in references.items():
+            if collection_name == "related_nodes":
+                if not isinstance(ids, list):
+                    violations.append(f"{owner} has malformed related_nodes references.")
+                    continue
+                prefixes = {
+                    "R": "requirements", "D": "decisions", "B": "boundaries",
+                    "E": "evidence", "C": "changes", "Q": "questions",
+                    "X": "risks", "O": "objects",
+                }
+                for reference in ids:
+                    collection = prefixes.get(reference[:1]) if isinstance(reference, str) else None
+                    if collection is None or reference not in collections.get(collection, {}):
+                        violations.append(f"{owner} references missing related node '{reference}'.")
+                continue
+            if not isinstance(ids, list):
+                violations.append(f"{owner} has malformed {collection_name} references.")
+                continue
+            for reference in ids:
+                if reference not in collections.get(collection_name, {}):
+                    singular = {
+                        "requirements": "requirement", "decisions": "decision",
+                        "objects": "object", "changes": "change", "evidence": "evidence",
+                    }[collection_name]
+                    violations.append(f"{owner} references missing {singular} '{reference}'.")
+        for reference in node.get("implements", []) if isinstance(node.get("implements", []), list) else []:
+            if reference not in collections.get("decisions", {}):
+                violations.append(f"{owner} references missing decision '{reference}'.")
+        for reference in node.get("affects", []) if isinstance(node.get("affects", []), list) else []:
+            if reference not in collections.get("requirements", {}):
+                violations.append(f"{owner} references missing requirement '{reference}'.")
+
     def mine_git_history(self, count: int = 10) -> int:
-        """Queries the local repository logs and saves structured reasoning JSON entries."""
+        """Capture commit messages and propose Change/Evidence nodes for reasoning clues."""
         import subprocess
         import json
         from datetime import datetime
@@ -204,6 +351,10 @@ class ContextEngine:
 
         mined_count = 0
         keywords = ["because", "requires", "reverts", "fixes", "breaking change"]
+        change_dir = self.ctx_dir / "changes"
+        evidence_dir = self.ctx_dir / "evidence"
+        change_dir.mkdir(parents=True, exist_ok=True)
+        evidence_dir.mkdir(parents=True, exist_ok=True)
 
         for entry in log_entries:
             entry = entry.strip()
@@ -216,6 +367,62 @@ class ContextEngine:
 
             if any(kw in message.lower() for kw in keywords):
                 message, redaction_count = redact_text(message)
+                existing_change = None
+                for path in change_dir.glob("C-*.yaml"):
+                    try:
+                        existing = self.yaml.load(path.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if isinstance(existing, dict) and existing.get("commit") == commit_hash:
+                        existing_change = existing
+                        break
+                if existing_change is None:
+                    existing_evidence = None
+                    for path in evidence_dir.glob("E-*.yaml"):
+                        try:
+                            existing = self.yaml.load(path.read_text(encoding="utf-8"))
+                        except Exception:
+                            continue
+                        if isinstance(existing, dict) and existing.get("locator") == commit_hash:
+                            existing_evidence = existing
+                            break
+                    if existing_evidence is None:
+                        evidence_ids = [
+                            int(match.group(1))
+                            for path in evidence_dir.glob("E-*.yaml")
+                            if (match := re.fullmatch(r"E-(\d+)", path.stem))
+                        ]
+                        evidence_id = f"E-{max(evidence_ids, default=0) + 1:03d}"
+                        evidence = Evidence(
+                            id=evidence_id,
+                            source_type="commit",
+                            locator=commit_hash,
+                            excerpt=message.strip(),
+                            captured_by=author,
+                            captured_at=date_str,
+                            status="proposed",
+                        ).model_dump(mode="json", exclude_none=True)
+                        atomic_write_yaml(evidence_dir / f"{evidence_id}.yaml", evidence, self.yaml)
+                    else:
+                        evidence_id = existing_evidence["id"]
+
+                    change_ids = [
+                        int(match.group(1))
+                        for path in change_dir.glob("C-*.yaml")
+                        if (match := re.fullmatch(r"C-(\d+)", path.stem))
+                    ]
+                    change_id = f"C-{max(change_ids, default=0) + 1:03d}"
+                    change = Change(
+                        id=change_id,
+                        summary=message.strip().splitlines()[0][:240] or f"Commit {commit_hash[:8]}",
+                        commit=commit_hash,
+                        author=author,
+                        changed_at=date_str,
+                        evidence=[evidence_id],
+                        status="proposed",
+                    ).model_dump(mode="json", exclude_none=True)
+                    atomic_write_yaml(change_dir / f"{change_id}.yaml", change, self.yaml)
+
                 payload = {
                     "source": "git_history_miner",
                     "commit": commit_hash,
@@ -239,7 +446,7 @@ class ContextEngine:
         model_name: str = "gpt-4o-mini",
         base_url: str = "https://api.openai.com/v1",
         api_format: str = "openai-compatible",
-        node_types=("requirement", "decision"),
+        node_types=("requirement", "decision", "boundary", "evidence", "change", "question", "risk", "object"),
     ) -> str:
         """Extract candidate context nodes through a supported provider API format."""
         import urllib.request
@@ -249,6 +456,11 @@ class ContextEngine:
             "requirement": '"requirements": [{ "statement": "...", "kind": "hard|preference", "why": "...", "evidence": "exact quote" }]',
             "decision": '"decisions": [{ "chosen": "...", "mode": "compared|default|forced|taste", "reason": "...", "evidence": "exact quote" }]',
             "boundary": '"boundaries": [{ "path": "...", "rule": "...", "why": "...", "evidence": "exact quote" }]',
+            "evidence": '"evidence": [{ "source_type": "transcript", "locator": "...", "excerpt": "exact quote" }]',
+            "change": '"changes": [{ "summary": "...", "files": [], "implements": [], "affects": [], "verification": "...", "evidence": "exact quote" }]',
+            "question": '"questions": [{ "question": "...", "owner": "...", "evidence": "exact quote" }]',
+            "risk": '"risks": [{ "statement": "...", "likelihood": "low|medium|high", "impact": "low|medium|high", "mitigation": "...", "evidence": "exact quote" }]',
+            "object": '"objects": [{ "name": "...", "kind": "...", "description": "...", "evidence": "exact quote" }]',
         }
         if not node_types or any(node_type not in schemas for node_type in node_types):
             raise ValueError("node_types must contain supported context node types.")
@@ -258,6 +470,7 @@ class ContextEngine:
             "Your job is to read raw development logs/transcripts and distill architectural context.\n"
             "Only create requirements explicitly stated by a human. Do not infer intent or alternatives.\n"
             "Only create requested node types. A boundary requires an explicit human instruction to protect a specific path; do not invent protected paths or constraints.\n"
+            "Only extract facts supported by explicit human text. Changes must describe an explicitly stated code change, not assume that code was modified. Risks and questions must be explicit, not speculative.\n"
             "Return proposed nodes, not approved facts. Include a short verbatim evidence quote for each node.\n"
             "Format output strictly as raw JSON text matching this syntax without markdown formatting backticks:\n"
             f"{{\n  {output_schema}\n}}"
@@ -366,6 +579,26 @@ class ContextEngine:
             if boundaries:
                 summary.extend(["", "### Protected Paths"])
                 summary.extend(f"- **{item.get('path', 'unknown')}**: {item.get('why', item.get('rule', 'protected'))}" for item in boundaries)
+
+        for kind, title, status_values, default_status, label_field, detail_field in (
+            ("objects", "Tracked Objects", {"active"}, "active", "name", "description"),
+            ("evidence", "Evidence Sources", {"active"}, "active", "source_type", "locator"),
+            ("changes", "Recent Changes", {"active"}, "proposed", "summary", "commit"),
+            ("questions", "Open Questions", {"open", "deferred"}, "open", "question", "owner"),
+            ("risks", "Risk Register", {"open", "mitigated", "accepted"}, "open", "statement", "mitigation"),
+        ):
+            folder = self.ctx_dir / kind
+            if not folder.is_dir():
+                continue
+            values = []
+            for path in sorted(folder.glob("*.yaml")):
+                item = self.yaml.load(path.read_text(encoding="utf-8"))
+                if item and item.get("status", default_status) in status_values:
+                    status = item.get("status", default_status)
+                    detail = f" — {item[detail_field]}" if item.get(detail_field) else ""
+                    values.append(f"- **{item.get('id')}** [{str(status).upper()}]: {item.get(label_field)}{detail}")
+            if values:
+                summary.extend(["", f"### {title}", *values[:10]])
 
         summary.extend(["", "Read `.context/` for source records and project details."])
         start_marker = "<!-- konman:context:start -->"
