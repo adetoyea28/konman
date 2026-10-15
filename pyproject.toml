@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "konman"
-version = "1.1.1a1"
+version = "1.1.2a1"
 authors = [
     { name = "Adetoye Ayomide", email = "adetoyea28@gmail.com" }
 ]
@@ -26,6 +26,9 @@ dependencies = [
     "ruamel.yaml>=0.17.0",
     "keyring>=25.0.0"
 ]
+
+[project.optional-dependencies]
+pdf = ["reportlab>=4.0"]
 
 [project.urls]
 Homepage = "https://github.com/adetoyea28/konman.git"

@@ -1,10 +1,14 @@
-# konman (Context Manager) v1.1.1a1 Alpha
+# konman (Context Manager) v1.1.2a1 Alpha
 
 **Experimental alpha:** Konman is being tested by early users. Generated adapters and parser fixtures do not prove that every vendor client/version will invoke its hooks. Verify your own tool with `konman doctor`; do not treat prompts or Git hooks as a security boundary. Extraction proposes context for human review and can send redacted transcript text to the configured provider.
 
 Konman keeps developer context in version-controlled project data rather than only in chat sessions.
 
-## What's New in 1.1.1a1
+## What's New in 1.1.2a1
+
+- Generate a Markdown or PDF specification document from project context with `konman doc`; PDF generation is available through the optional `pdf` extra.
+
+### Previous updates in 1.1.1a1
 
 - Select the context node types to extract with repeatable `konman extract --type` options. Requirements, decisions, and boundaries can be extracted, and later runs can process additional types from the same captures.
 - Extracted boundaries are proposed for review like other extracted nodes. They become active context only after approval with `konman review --id B-001`.
@@ -33,10 +37,16 @@ While *What, Where, When,* and *How* can easily be recovered by indexing raw cod
 ## 🚀 Quickstart & Global Installation
 
 ### 1. Install the library via pip
-Ensure you have Python 3.10+ installed. For alpha testing from a source checkout, install the current tree:
+Ensure you have Python 3.10+ installed. Install the core library for Markdown documentation:
 
 ```bash
-pip install konman==1.1.1a1
+pip install konman==1.1.2a1
+```
+
+To enable PDF documentation generation, install the `pdf` optional dependency extra:
+
+```bash
+pip install "konman[pdf]==1.1.2a1"
 ```
 
 Verify your global environment configuration setup by triggering the structured help display:
@@ -148,6 +158,7 @@ Kiro IDE 1.x and CLI V3 load standalone hook files. Steering remains the static 
 | **`record`** | `konman record -t [type] -i [id]` | Launches an interactive console wizard to manually log a new `requirement`, `decision`, or `boundary`. |
 | **`resolve`** | `konman resolve [id]` | Reconciles stale nodes flagged with `needs_review`, updating trade-off justifications and healing the graph. |
 | **`config`** | `konman config [-k key] [-p provider] [--api-format format] [--base-url url] [--model name] [--migrate] [--clear]` | Saves provider metadata in `~/.config/konman/config.json` and API keys in the OS credential store. |
+| **`doc`** | `konman doc [--format markdown|pdf] [--output FILE]` | Generates a project context and specifications document from `.context/` as Markdown or PDF. |
 | **`setup-hooks`** | `konman setup-hooks` | Installs an idempotent, marked validation block in Git's pre-commit hook while preserving other hook commands. |
 | **`disable-hooks`** | `konman disable-hooks` | Removes only the marked Konman block; unrelated pre-commit hook content is preserved. |
 | **`check`** | `konman check [--strict]` | Read-only schema/reference/staleness audit; `--strict` also fails on proposed nodes. Used by the optional pre-commit hook. |
@@ -167,6 +178,21 @@ Kiro IDE 1.x and CLI V3 load standalone hook files. Steering remains the static 
 | **`mcp`** | `konman mcp [--dir project]` | Runs the read-only Konman MCP server over stdio with context, boundary, and decision-search tools. |
 
 `config` supports four request formats: `openai-compatible`, `anthropic`, `gemini`, and `ollama`. Known provider names select a default format and endpoint. For a custom endpoint, provide its API root URL and the format it implements. Konman does not support arbitrary provider-specific REST schemas. Anthropic and Gemini configurations require an explicit model; Ollama works locally without an API key. Keys are stored in the OS credential store when available; existing plaintext keys must be explicitly migrated.
+
+Generate a project context document in Markdown (the default) or PDF:
+
+```bash
+konman doc
+konman doc --format markdown --output docs/project-context.md
+```
+
+The default file path is `.context/context-document.<format>`. PDF support is optional; install it with `pip install "konman[pdf]"`, then use:
+
+```bash
+konman doc --format pdf --output docs/project-context.pdf
+```
+
+The document includes the project overview, requirements, decisions, protected boundaries, current state, and recorded questions. It excludes raw captures and internal extraction metadata.
 
 Examples:
 

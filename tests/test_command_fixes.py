@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import sys
 import tempfile
 import types
@@ -202,6 +203,78 @@ class CommandFixTests(unittest.TestCase):
         packs = list((engine.ctx_dir / "state" / "history").glob("handoff-*.md"))
         self.assertEqual(len(packs), 1)
         self.assertIn("Keep the API stable", packs[0].read_text(encoding="utf-8"))
+
+    def test_doc_generates_markdown_from_context_without_raw_capture_data(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        (engine.ctx_dir / "project.md").write_text("# Example API\nA service for project planning.\n", encoding="utf-8")
+        (engine.ctx_dir / "requirements" / "R-001.yaml").write_text(
+            "id: R-001\nstatement: Keep the API stable\nkind: hard\nstatus: proposed\n"
+            "evidence: Keep the API stable.\ncapture_id: internal-capture-metadata\n",
+            encoding="utf-8",
+        )
+        (engine.ctx_dir / "decisions" / "D-001.yaml").write_text(
+            "id: D-001\nchosen: SQLite\nmode: default\nstatus: active\nreason: Local-first storage.\n",
+            encoding="utf-8",
+        )
+        (engine.ctx_dir / "boundaries.yaml").write_text(
+            "- id: B-001\n  path: src/auth.py\n  rule: no_edit_without_approval\n  status: active\n",
+            encoding="utf-8",
+        )
+        (engine.ctx_dir / "state" / "current.yaml").write_text(
+            "summary: Refactoring authentication\n", encoding="utf-8"
+        )
+        (engine.ctx_dir / "questions" / "Q-001.md").write_text(
+            "Should API keys support rotation?\n", encoding="utf-8"
+        )
+        (engine.ctx_dir / ".raw" / "capture.json").write_text(
+            '{"prompt":"raw-capture-secret"}', encoding="utf-8"
+        )
+
+        result = self.runner.invoke(cli.main, ["doc", "--dir", str(self.root)])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        output = engine.ctx_dir / "context-document.md"
+        self.assertTrue(output.is_file())
+        document = output.read_text(encoding="utf-8")
+        for expected in (
+            "Project Context and Specifications: " + self.root.name,
+            "A service for project planning.",
+            "Keep the API stable",
+            "SQLite",
+            "src/auth.py",
+            "Refactoring authentication",
+            "Should API keys support rotation?",
+        ):
+            self.assertIn(expected, document)
+        self.assertNotIn("internal-capture-metadata", document)
+        self.assertNotIn("raw-capture-secret", document)
+
+    def test_doc_reports_missing_context_directory(self):
+        result = self.runner.invoke(cli.main, ["doc", "--dir", str(self.root)])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("run `konman init` first", result.output)
+
+    @unittest.skipUnless(importlib.util.find_spec("reportlab"), "ReportLab optional PDF dependency is not installed")
+    def test_doc_generates_pdf_output(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        (engine.ctx_dir / "project.md").write_text("# Example API\nA service.\n", encoding="utf-8")
+        (engine.ctx_dir / "requirements" / "R-001.yaml").write_text(
+            "id: R-001\nstatement: Keep the API response < 100 ms\nkind: hard\n"
+            "status: active\nwhy: Preserve a responsive service.\n",
+            encoding="utf-8",
+        )
+
+        result = self.runner.invoke(
+            cli.main,
+            ["doc", "--format", "pdf", "--output", "docs/project-context.pdf", "--dir", str(self.root)],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        output = self.root / "docs" / "project-context.pdf"
+        self.assertTrue(output.read_bytes().startswith(b"%PDF-"))
+        self.assertGreater(output.stat().st_size, 1000)
 
     def test_setup_adapters_write_hooks_and_preserve_existing_config(self):
         claude_settings = self.root / ".claude" / "settings.json"

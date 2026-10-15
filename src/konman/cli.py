@@ -16,6 +16,7 @@ from datetime import datetime
 from ruamel.yaml import YAML
 from konman import __version__
 from konman.engine import ContextEngine
+from konman.documentation import render_context_markdown, write_markdown, write_pdf
 from konman.models import BoundaryRule, Decision, Requirement
 from konman.redaction import redact_text, redact_value
 from konman.storage import atomic_write_json, atomic_write_text, create_new_bytes, is_raw_ignored
@@ -42,7 +43,7 @@ class ConmanTopLevelGroup(click.Group):
             return command.get_usage(command_ctx).removeprefix("Usage: ")
 
         commands = self.list_commands(ctx)
-        core_cmds = [c for c in commands if c in ["init", "setup", "sync", "state", "record", "resolve", "review", "doctor", "check", "config", "setup-hooks", "disable-hooks"]]
+        core_cmds = [c for c in commands if c in ["init", "setup", "sync", "state", "record", "resolve", "review", "doctor", "check", "config", "doc", "setup-hooks", "disable-hooks"]]
         pipe_cmds = [c for c in commands if c in ["backfill", "tail", "clean", "mine", "extract", "handoff", "hook", "mcp"]]
 
         if core_cmds:
@@ -71,6 +72,7 @@ class ConmanTopLevelGroup(click.Group):
             ("", "konman setup claude-code --dir ."),
             ("", "konman config --api-key <key> --provider anthropic --model <model>"),
             ("", "konman config --provider custom --api-format openai-compatible --base-url <url> --api-key <key> --model <model>"),
+            ("", "konman doc --format markdown"),
             ("", "konman config --provider ollama --model <model>"),
             ("", "konman extract --help"),
             ("", "konman handoff claude-code codex --dir ."),
@@ -389,6 +391,33 @@ def state(dir):
     else:
         click.echo("  No untracked history data packets currently idling inside your background raw queue pipes.")
     click.echo("\n======================================================================\n")
+
+
+@main.command(name="doc")
+@click.option("--dir", default=".", help="Target project root directory location.")
+@click.option("--format", "doc_format", type=click.Choice(["markdown", "pdf"]), default="markdown", show_default=True, help="Documentation output format.")
+@click.option("--output", type=click.Path(path_type=Path, dir_okay=False), help="Output file path; defaults to .context/context-document.<format>.")
+def doc(dir, doc_format, output):
+    """Generate Markdown or PDF documentation from project context and specifications."""
+    engine = ContextEngine(dir)
+    try:
+        markdown = render_context_markdown(engine)
+    except (OSError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+    extension = "md" if doc_format == "markdown" else "pdf"
+    output_path = output or (engine.ctx_dir / f"context-document.{extension}")
+    if not output_path.is_absolute():
+        output_path = engine.base_dir / output_path
+    try:
+        if doc_format == "markdown":
+            write_markdown(markdown, output_path)
+        else:
+            write_pdf(markdown, output_path)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f" Project context documentation written to {output_path}.")
+
 
 @main.command()
 @click.option("--type", "-t", required=True, type=click.Choice(["requirement", "decision", "boundary"]), help="The type of context entity to create.")
