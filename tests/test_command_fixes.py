@@ -1042,6 +1042,39 @@ class CommandFixTests(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn('pip install "konman[gui]"', result.output)
 
+    def test_gui_prepares_pending_node_selection_before_widget_creation(self):
+        from konman.gui_app import _prepare_selected_node
+
+        session_state = {"konman_pending_selected_node": "R-002"}
+        _prepare_selected_node(session_state, ["R-001", "R-002"])
+        self.assertEqual(session_state["konman_selected_node"], "R-002")
+        self.assertNotIn("konman_pending_selected_node", session_state)
+
+        session_state["konman_pending_selected_node"] = "R-003"
+        _prepare_selected_node(session_state, ["R-001", "R-002"])
+        self.assertEqual(session_state["konman_selected_node"], "R-002")
+        self.assertNotIn("konman_pending_selected_node", session_state)
+
+        session_state["konman_selected_node"] = "missing"
+        _prepare_selected_node(session_state, ["R-001", "R-002"])
+        self.assertEqual(session_state["konman_selected_node"], "R-001")
+
+    @unittest.skipUnless(importlib.util.find_spec("streamlit_flow"), "Streamlit GUI extra is not installed")
+    def test_gui_initial_flow_state_uses_supported_component_constructor(self):
+        from konman.gui_app import (
+            _graph_elements,
+            _initial_flow_state,
+            _state_node_id,
+        )
+
+        flow_nodes, flow_edges = _graph_elements(
+            [{"id": "R-001", "type": "requirement", "label": "Keep API stable", "status": "active"}],
+            [],
+        )
+        state = _initial_flow_state(flow_nodes, flow_edges)
+        self.assertEqual([node.id for node in state.nodes], ["R-001"])
+        self.assertEqual(_state_node_id(state), None)
+
     def test_llm_response_parsing_uses_chat_completions_shape(self):
         class Response:
             def __enter__(self):

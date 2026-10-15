@@ -37,6 +37,7 @@ Desktop.ini
 
 # Private prompt/context history (not project documentation)
 /cnman-context.txt
+error.png
 
 # Local raw transcripts and machine-specific ingestion cursors
 .context/.raw/

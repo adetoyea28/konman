@@ -85,6 +85,16 @@ def _state_node_id(flow_state) -> str | None:
     return None
 
 
+def _prepare_selected_node(session_state, node_options, clicked_id=None) -> None:
+    pending_selection = session_state.pop("konman_pending_selected_node", None)
+    if pending_selection in node_options:
+        session_state["konman_selected_node"] = pending_selection
+    elif clicked_id in node_options:
+        session_state["konman_selected_node"] = clicked_id
+    elif session_state.get("konman_selected_node") not in node_options:
+        session_state["konman_selected_node"] = node_options[0] if node_options else None
+
+
 def _graph_elements(nodes, edges):
     from streamlit_flow.elements import StreamlitFlowEdge, StreamlitFlowNode
 
@@ -120,6 +130,12 @@ def _graph_elements(nodes, edges):
         for edge in edges
     ]
     return node_elements, edge_elements
+
+
+def _initial_flow_state(nodes, edges):
+    from streamlit_flow.state import StreamlitFlowState
+
+    return StreamlitFlowState(nodes=nodes, edges=edges)
 
 
 def _save_editor(workspace, snapshot, node_type: str, selected_id: str, submitted_yaml: str):
@@ -329,7 +345,6 @@ def _render_lifecycle_actions(st, workspace, snapshot, node_type, node_id, recor
 def main() -> None:
     import streamlit as st
     from streamlit_flow import streamlit_flow
-    from streamlit_flow.state import StreamlitFlowState
 
     args = _application_arguments()
     engine = ContextEngine(args.dir)
@@ -410,9 +425,7 @@ def main() -> None:
                 tuple((edge["id"], edge["label"]) for edge in filtered_edges),
             )
             if st.session_state.get("konman_flow_signature") != flow_signature:
-                st.session_state["konman_flow_state"] = StreamlitFlowState(
-                    key="konman_context_graph", nodes=flow_nodes, edges=flow_edges
-                )
+                st.session_state["konman_flow_state"] = _initial_flow_state(flow_nodes, flow_edges)
                 st.session_state["konman_flow_signature"] = flow_signature
             flow_state = streamlit_flow(
                 "konman_context_graph",
@@ -438,12 +451,7 @@ def main() -> None:
     if not selectable_nodes:
         st.info("This project has no context records yet. Create a record below to begin the graph.")
     node_options = [node["id"] for node in selectable_nodes]
-    if "konman_selected_node" not in st.session_state:
-        st.session_state["konman_selected_node"] = clicked_id if clicked_id in node_options else (node_options[0] if node_options else None)
-    elif clicked_id in node_options:
-        st.session_state["konman_selected_node"] = clicked_id
-    if st.session_state["konman_selected_node"] not in node_options:
-        st.session_state["konman_selected_node"] = node_options[0] if node_options else None
+    _prepare_selected_node(st.session_state, node_options, clicked_id)
 
     selected_id = st.selectbox(
         "Inspect a node",
@@ -566,7 +574,7 @@ def main() -> None:
                 st.success(f"Created {saved_id}.")
                 for notice in notices:
                     st.warning(notice)
-                st.session_state["konman_selected_node"] = saved_id
+                st.session_state["konman_pending_selected_node"] = saved_id
                 st.rerun()
             except Exception as error:
                 st.error(f"Record was not created: {error}")

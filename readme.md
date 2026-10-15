@@ -1,16 +1,17 @@
-# konman (Context Manager) v1.1.3a1 Alpha
+# konman (Context Manager) v1.1.3a2 Alpha
 
 **Experimental alpha:** Konman is being tested by early users. Generated adapters and parser fixtures do not prove that every vendor client/version will invoke its hooks. Verify your own tool with `konman doctor`; do not treat prompts or Git hooks as a security boundary. Extraction proposes context for human review and can send redacted transcript text to the configured provider.
 
 Konman keeps developer context in version-controlled project data rather than only in chat sessions.
 
-## What's New in 1.1.3a1
+## What's New in 1.1.3a2
 
 - Track first-class Objects, Evidence, Changes, Questions, and Risks alongside requirements, decisions, and protected boundaries. These records support extraction, review, resolution, validation, state, handoff, MCP, and generated documentation.
 - `konman mine` now proposes structured Change and Evidence records for commit messages containing explicit reasoning clues.
 - Requirements, decisions, and boundaries extracted from captures are linked to proposed Evidence records; this provenance record is created alongside the selected node type.
 - `konman record`, `konman review`, and `konman resolve` support the new node lifecycles; `konman check` validates their schemas and graph references.
-- Launch the optional local Streamlit context graph with `konman gui` after installing `konman[gui]`. Browse typed relationships, create/edit records, review proposals, resolve questions/risks, and check graph validity without changing the `1.1.3a1` version.
+- Fixed GUI node creation so the newly created node is selected without mutating Streamlit's selectbox state after the widget has been instantiated.
+- Launch the optional local Streamlit context graph with `konman gui` after installing `konman[gui]`. Browse typed relationships, create/edit records, review proposals, resolve questions/risks, and check graph validity.
 
 ### Previous updates in 1.1.2a1
 
@@ -48,13 +49,13 @@ While *What, Where, When,* and *How* can easily be recovered by indexing raw cod
 Ensure you have Python 3.10+ installed. Install the core library for Markdown documentation:
 
 ```bash
-pip install konman==1.1.3a1
+pip install konman==1.1.3a2
 ```
 
 To enable PDF documentation generation, install the `pdf` optional dependency extra:
 
 ```bash
-pip install "konman[pdf]==1.1.3a1"
+pip install "konman[pdf]==1.1.3a2"
 ```
 
 Verify your global environment configuration setup by triggering the structured help display:
@@ -84,7 +85,7 @@ This deploys the underlying `.context/` data graph infrastructure:
 Install the GUI extra to browse the linked context graph and manage records in a local Streamlit interface:
 
 ```bash
-pip install "konman[gui]==1.1.3a1"
+pip install "konman[gui]==1.1.3a2"
 konman gui
 ```
 
