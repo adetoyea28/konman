@@ -467,7 +467,7 @@ def record(type, id, dir):
 
 @main.command()
 @click.option("--dir", default=".", help="Target project root directory location.")
-@click.option("--id", "node_id", help="Requirement or decision ID to review.")
+@click.option("--id", "node_id", help="Requirement, decision, or boundary ID to review.")
 @click.option("--approve", is_flag=True, help="Approve a proposed node after confirmation.")
 @click.option("--reject", is_flag=True, help="Reject a proposed node with a recorded reason.")
 @click.option("--edit", is_flag=True, help="Edit proposed node text before saving or approval.")
@@ -482,6 +482,7 @@ def review(dir, node_id, approve, reject, edit, yes):
     yaml = YAML()
     yaml.preserve_quotes = True
     folders = {"R": engine.ctx_dir / "requirements", "D": engine.ctx_dir / "decisions"}
+    boundaries_path = engine.ctx_dir / "boundaries.yaml"
 
     if not node_id:
         proposals = []
@@ -496,45 +497,73 @@ def review(dir, node_id, approve, reject, edit, yes):
                     continue
                 if node and node.get("status") == "proposed":
                     proposals.append((prefix, node, path))
+        if boundaries_path.exists():
+            try:
+                boundaries = yaml.load(boundaries_path.read_text(encoding="utf-8")) or []
+                boundaries = [boundaries] if isinstance(boundaries, dict) else boundaries
+                if not isinstance(boundaries, list):
+                    raise ValueError("boundaries.yaml must contain a list or mapping.")
+                proposals.extend(
+                    ("B", boundary, boundaries_path)
+                    for boundary in boundaries
+                    if isinstance(boundary, dict) and boundary.get("status") == "proposed"
+                )
+            except Exception as error:
+                click.echo(f"Invalid {boundaries_path.relative_to(engine.base_dir)}: {error}")
         if not proposals:
             click.echo("No proposed nodes are waiting for review.")
             return
         for prefix, node, path in proposals:
-            label = node.get("statement") if prefix == "R" else node.get("chosen")
+            label = node.get("statement") if prefix == "R" else node.get("chosen") if prefix == "D" else node.get("path")
             click.echo(f"{node.get('id', path.stem)} [{prefix}] {label}")
             if node.get("evidence"):
                 click.echo(f"  Evidence: {node['evidence']}")
         click.echo("Run `konman review --id NODE_ID` to inspect or decide a proposal.")
         return
 
-    match = re.fullmatch(r"([RD])-(\d+)", node_id)
+    match = re.fullmatch(r"([RDB])-(\d+)", node_id)
     if not match:
-        raise click.BadParameter("expected a node ID such as R-001 or D-001", param_hint="--id")
-    path = folders[match.group(1)] / f"{node_id}.yaml"
-    if not path.is_file():
-        raise click.ClickException(f"No requirement or decision with ID {node_id} exists.")
-    try:
-        node = yaml.load(path.read_text(encoding="utf-8"))
-    except Exception as error:
-        raise click.ClickException(f"Cannot parse {node_id}: {error}") from error
+        raise click.BadParameter("expected a node ID such as R-001, D-001, or B-001", param_hint="--id")
+    prefix = match.group(1)
+    boundaries = None
+    if prefix == "B":
+        path = boundaries_path
+        if not path.is_file():
+            raise click.ClickException(f"No boundary with ID {node_id} exists.")
+        try:
+            boundaries = yaml.load(path.read_text(encoding="utf-8")) or []
+            boundaries = [boundaries] if isinstance(boundaries, dict) else boundaries
+            node = next((item for item in boundaries if isinstance(item, dict) and item.get("id") == node_id), None)
+        except Exception as error:
+            raise click.ClickException(f"Cannot parse {node_id}: {error}") from error
+    else:
+        path = folders[prefix] / f"{node_id}.yaml"
+        if not path.is_file():
+            raise click.ClickException(f"No requirement or decision with ID {node_id} exists.")
+        try:
+            node = yaml.load(path.read_text(encoding="utf-8"))
+        except Exception as error:
+            raise click.ClickException(f"Cannot parse {node_id}: {error}") from error
+    if not node:
+        raise click.ClickException(f"No boundary with ID {node_id} exists.")
     if not isinstance(node, dict) or node.get("status") != "proposed":
         raise click.ClickException(f"{node_id} is not a valid proposed node.")
 
-    is_requirement = match.group(1) == "R"
-    click.echo(f"{node_id}: {node.get('statement') if is_requirement else node.get('chosen')}")
+    is_requirement = prefix == "R"
+    is_decision = prefix == "D"
+    edit_field = "statement" if is_requirement else "chosen" if is_decision else "path"
+    reason_field = "why" if prefix in ("R", "B") else "reason"
+    click.echo(f"{node_id}: {node.get(edit_field)}")
     click.echo(f"Evidence: {node.get('evidence', '(missing)')}")
     if edit:
-        field = "statement" if is_requirement else "chosen"
-        node[field] = click.prompt(f"Updated {field}", default=str(node.get(field, "")))
-        reason_field = "why" if is_requirement else "reason"
+        node[edit_field] = click.prompt(f"Updated {edit_field}", default=str(node.get(edit_field, "")))
         node[reason_field] = click.prompt(f"Updated {reason_field}", default=str(node.get(reason_field) or "")) or None
     if not approve and not reject and not edit:
         action = click.prompt("Action", type=click.Choice(["approve", "reject", "edit", "leave"]), default="leave")
         if action == "leave":
             return
         if action == "edit":
-            field = "statement" if is_requirement else "chosen"
-            node[field] = click.prompt(f"Updated {field}", default=str(node.get(field, "")))
+            node[edit_field] = click.prompt(f"Updated {edit_field}", default=str(node.get(edit_field, "")))
             edit = True
         else:
             approve, reject = action == "approve", action == "reject"
@@ -544,7 +573,7 @@ def review(dir, node_id, approve, reject, edit, yes):
             click.echo("Approval cancelled.")
             return
         node["status"] = "active"
-        if not is_requirement:
+        if is_decision:
             for item in node.get("considered", []):
                 if item.get("object") == node.get("chosen"):
                     item["verdict"] = "selected"
@@ -557,13 +586,14 @@ def review(dir, node_id, approve, reject, edit, yes):
 
     if approve or reject or edit:
         try:
-            (Requirement if is_requirement else Decision).model_validate(node)
+            model = Requirement if is_requirement else Decision if is_decision else BoundaryRule
+            model.model_validate(node)
         except Exception as error:
             raise click.ClickException(f"Edited node failed schema validation: {error}") from error
         node["review"] = {"who": os.environ.get("KONMAN_REVIEWER") or getpass.getuser(), "when": datetime.now().isoformat(timespec="seconds")}
         from io import StringIO
         serialized = StringIO()
-        yaml.dump(node, serialized)
+        yaml.dump(boundaries if prefix == "B" else node, serialized)
         atomic_write_text(path, serialized.getvalue())
         engine.compile_agents_md()
         click.echo(f"{node_id} saved with status '{node['status']}'.")
@@ -989,15 +1019,62 @@ def _write_context_node(folder, prefix, payload, capture_id, chunk_index, yaml):
     return node_id, True
 
 
+def _write_boundary_node(boundaries_path, payload, capture_id, chunk_index, yaml):
+    existing = []
+    if boundaries_path.exists():
+        existing_data = yaml.load(boundaries_path.read_text(encoding="utf-8")) or []
+        existing = [existing_data] if isinstance(existing_data, dict) else existing_data
+        if not isinstance(existing, list):
+            raise ValueError("boundaries.yaml must contain a list or mapping.")
+
+    candidate_fingerprint = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    ).hexdigest()
+    for boundary in existing:
+        if not isinstance(boundary, dict):
+            continue
+        if boundary.get("path") == payload["path"]:
+            return boundary.get("id"), False
+        if (
+            boundary.get("capture_id") == capture_id
+            and boundary.get("capture_chunk") == chunk_index
+            and boundary.get("candidate_fingerprint") == candidate_fingerprint
+        ):
+            return boundary.get("id"), False
+
+    existing_ids = [
+        int(match.group(1))
+        for boundary in existing
+        if isinstance(boundary, dict)
+        and (match := re.fullmatch(r"B-(\d+)", str(boundary.get("id", ""))))
+    ]
+    node_id = f"B-{max(existing_ids, default=0) + 1:03d}"
+    payload.update({
+        "id": node_id,
+        "capture_id": capture_id,
+        "capture_chunk": chunk_index,
+        "candidate_fingerprint": candidate_fingerprint,
+    })
+    BoundaryRule.model_validate(payload)
+    existing.append(payload)
+    from io import StringIO
+    serialized = StringIO()
+    yaml.dump(existing, serialized)
+    atomic_write_text(boundaries_path, serialized.getvalue())
+    return node_id, True
+
+
 @main.command()
 @click.option("--api-key", envvar=["KONMAN_API_KEY", "OPENAI_API_KEY"], help="Provider API key (or set KONMAN_API_KEY).")
 @click.option("--provider", default=None, help="Provider label; defaults to the saved provider.")
 @click.option("--api-format", type=click.Choice(API_FORMATS), default=None, help="Provider API protocol format.")
 @click.option("--model", default=None, help="Model name; defaults to the saved config or gpt-4o-mini.")
 @click.option("--base-url", default=None, envvar=["KONMAN_BASE_URL", "OPENAI_BASE_URL"], help="Provider API root URL; defaults to the saved provider endpoint.")
+@click.option("--type", "node_types", multiple=True, type=click.Choice(["requirement", "decision", "boundary"]), help="Node type(s) to extract; repeat to select multiple. Defaults to all.")
 @click.option("--dir", default=".", help="Target project root directory location.")
-def extract(api_key, provider, api_format, model, base_url, dir):
+def extract(api_key, provider, api_format, model, base_url, node_types, dir):
     """Extract evidence-grounded proposed context nodes from unprocessed captures."""
+    node_types = tuple(dict.fromkeys(node_types)) or ("requirement", "decision", "boundary")
     global_cfg = load_global_api_credentials() or {}
     if global_cfg.get("config_error"):
         raise click.ClickException(global_cfg["config_error"])
@@ -1071,31 +1148,46 @@ def extract(api_key, provider, api_format, model, base_url, dir):
 
         for chunk_index, (offset, text, human_evidence) in enumerate(chunks):
             chunk_id = f"{offset}:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
-            if chunk_id in completed:
+            previous = chunk_states.get(chunk_id, {})
+            completed_types = set(previous.get("completed_node_types", []))
+            if chunk_id in completed and "completed_node_types" not in previous:
+                completed_types.update(("requirement", "decision"))
+            types_to_extract = tuple(node_type for node_type in node_types if node_type not in completed_types)
+            if not types_to_extract:
                 continue
+            completed.discard(chunk_id)
             redacted_text, redaction_count = _redact_capture_text(text, custom_patterns)
             click.echo(f" Extracting {path.name} chunk {chunk_index + 1}/{len(chunks)} ({redaction_count} redactions)...")
-            previous = chunk_states.get(chunk_id, {})
             chunk_states[chunk_id] = {
                 "status": "processing",
                 "attempts": previous.get("attempts", 0) + 1,
                 "source_offset": offset,
+                "completed_node_types": sorted(completed_types),
                 "updated_at": datetime.now().isoformat(timespec="seconds"),
             }
             state.update({"digest": digest, "completed_chunks": sorted(completed), "chunks": chunk_states})
             atomic_write_json(state_path, state)
             try:
-                response = engine.execute_llm_distillation(redacted_text, api_key, model, base_url, api_format)
+                response = engine.execute_llm_distillation(
+                    redacted_text, api_key, model, base_url, api_format, node_types=types_to_extract
+                )
                 extracted_data = json.loads(response)
                 if not isinstance(extracted_data, dict) or extracted_data.get("error"):
                     raise ValueError(extracted_data.get("error", "Provider response must be a JSON object"))
                 requirements = extracted_data.get("requirements", [])
                 decisions = extracted_data.get("decisions", [])
-                if not isinstance(requirements, list) or not isinstance(decisions, list):
-                    raise ValueError("requirements and decisions must be JSON arrays")
+                boundaries = extracted_data.get("boundaries", [])
+                selected_arrays = {
+                    "requirement": ("requirements", requirements),
+                    "decision": ("decisions", decisions),
+                    "boundary": ("boundaries", boundaries),
+                }
+                for node_type, (key, values) in selected_arrays.items():
+                    if node_type in types_to_extract and not isinstance(values, list):
+                        raise ValueError(f"{key} must be a JSON array")
 
                 chunk_created = 0
-                for requirement in requirements:
+                for requirement in requirements if "requirement" in types_to_extract else []:
                     if not isinstance(requirement, dict):
                         continue
                     quote = requirement.get("evidence")
@@ -1118,7 +1210,7 @@ def extract(api_key, provider, api_format, model, base_url, dir):
                         created += 1
                         chunk_created += 1
 
-                for decision in decisions:
+                for decision in decisions if "decision" in types_to_extract else []:
                     if not isinstance(decision, dict):
                         continue
                     quote = decision.get("evidence")
@@ -1142,11 +1234,36 @@ def extract(api_key, provider, api_format, model, base_url, dir):
                         created += 1
                         chunk_created += 1
 
-                completed.add(chunk_id)
+                for boundary in boundaries if "boundary" in types_to_extract else []:
+                    if not isinstance(boundary, dict):
+                        continue
+                    quote = boundary.get("evidence")
+                    if not isinstance(quote, str) or not quote.strip() or quote not in human_evidence or quote not in redacted_text:
+                        continue
+                    if not isinstance(boundary.get("path"), str) or not boundary["path"].strip():
+                        continue
+                    node_id, was_created = _write_boundary_node(
+                        engine.ctx_dir / "boundaries.yaml", {
+                            "path": boundary["path"].strip(),
+                            "rule": boundary.get("rule") or "no_edit_without_approval",
+                            "why": boundary.get("why"),
+                            "evidence": quote,
+                            "status": "proposed",
+                        }, capture_id, chunk_id, yaml,
+                    )
+                    if was_created:
+                        click.echo(f"    Proposed Boundary: {node_id}")
+                        created += 1
+                        chunk_created += 1
+
+                completed_types.update(types_to_extract)
+                if set(("requirement", "decision", "boundary")).issubset(completed_types):
+                    completed.add(chunk_id)
                 chunk_states[chunk_id] = {
                     "status": "processed",
                     "attempts": chunk_states[chunk_id]["attempts"],
                     "source_offset": offset,
+                    "completed_node_types": sorted(completed_types),
                     "proposed_nodes": chunk_created,
                     "updated_at": datetime.now().isoformat(timespec="seconds"),
                 }
@@ -1161,6 +1278,7 @@ def extract(api_key, provider, api_format, model, base_url, dir):
                     "status": "failed",
                     "attempts": attempts,
                     "source_offset": offset,
+                    "completed_node_types": sorted(completed_types),
                     "error_type": type(error).__name__,
                     "updated_at": datetime.now().isoformat(timespec="seconds"),
                 }
@@ -1298,10 +1416,13 @@ def config_command(api_key, provider, api_format, base_url, model, migrate, clea
         return
 
     provider = provider or current_cfg.get("provider") or "openai"
-    if not api_key and str(current_cfg.get("provider", "")).casefold() == provider.casefold():
-        api_key = current_cfg.get("api_key")
-    api_format = api_format or current_cfg.get("api_format")
-    base_url = base_url or current_cfg.get("base_url")
+    reusing_configured_provider = (
+        str(current_cfg.get("provider", "")).casefold() == provider.casefold()
+    )
+    if reusing_configured_provider:
+        api_key = api_key or current_cfg.get("api_key")
+        api_format = api_format or current_cfg.get("api_format")
+        base_url = base_url or current_cfg.get("base_url")
     try:
         llm_config = resolve_llm_configuration(provider, api_format, base_url)
     except ValueError as error:
@@ -1428,7 +1549,12 @@ def _mcp_context(engine, tool_name, arguments):
                     result["decisions"].append(node)
         boundaries_path = engine.ctx_dir / "boundaries.yaml"
         if boundaries_path.exists():
-            result["boundaries"] = yaml.load(boundaries_path.read_text(encoding="utf-8")) or []
+            boundaries = yaml.load(boundaries_path.read_text(encoding="utf-8")) or []
+            boundaries = [boundaries] if isinstance(boundaries, dict) else boundaries
+            result["boundaries"] = [
+                item for item in boundaries
+                if isinstance(item, dict) and item.get("status") not in ("proposed", "rejected")
+            ]
         current_path = engine.ctx_dir / "state" / "current.yaml"
         if current_path.exists():
             result["current_state"] = current_path.read_text(encoding="utf-8")
@@ -1441,6 +1567,10 @@ def _mcp_context(engine, tool_name, arguments):
         boundaries = yaml.load(boundaries_path.read_text(encoding="utf-8")) or []
         if isinstance(boundaries, dict):
             boundaries = [boundaries]
+        boundaries = [
+            item for item in boundaries
+            if isinstance(item, dict) and item.get("status") not in ("proposed", "rejected")
+        ]
         requested_path = arguments.get("path")
         if requested_path:
             boundaries = [item for item in boundaries if item.get("path") and (requested_path == item["path"] or requested_path.startswith(item["path"].rstrip("/") + "/"))]

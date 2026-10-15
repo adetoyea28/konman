@@ -62,6 +62,72 @@ class CommandFixTests(unittest.TestCase):
         self.assertIn("status: proposed", node)
         self.assertFalse((engine.ctx_dir / "requirements" / "R-002.yaml").exists())
 
+    def test_extract_can_select_boundary_nodes_only(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        (engine.ctx_dir / ".raw" / "hook.json").write_text(
+            json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "Do not edit src/auth.py without approval."}),
+            encoding="utf-8",
+        )
+        response = json.dumps({
+            "requirements": [{"statement": "An ignored requirement", "kind": "hard", "evidence": "Do not edit src/auth.py without approval."}],
+            "decisions": [{"chosen": "An ignored decision", "mode": "forced", "evidence": "Do not edit src/auth.py without approval."}],
+            "boundaries": [{
+                "path": "src/auth.py",
+                "rule": "no_edit_without_approval",
+                "why": "Authentication changes require review.",
+                "evidence": "Do not edit src/auth.py without approval.",
+            }],
+        })
+        with patch.object(ContextEngine, "execute_llm_distillation", return_value=response) as extract:
+            result = self.runner.invoke(
+                cli.main,
+                ["extract", "--api-key", "test-key", "--type", "boundary", "--dir", str(self.root)],
+            )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(extract.call_args.kwargs["node_types"], ("boundary",))
+        boundaries = YAML().load((engine.ctx_dir / "boundaries.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(boundaries[0]["id"], "B-001")
+        self.assertEqual(boundaries[0]["path"], "src/auth.py")
+        self.assertEqual(boundaries[0]["status"], "proposed")
+        self.assertFalse(list((engine.ctx_dir / "requirements").glob("R-*.yaml")))
+        self.assertFalse(list((engine.ctx_dir / "decisions").glob("D-*.yaml")))
+
+    def test_extract_can_process_another_type_from_a_completed_capture(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        (engine.ctx_dir / ".raw" / "hook.json").write_text(
+            json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "Do not edit src/auth.py without approval."}),
+            encoding="utf-8",
+        )
+        response = json.dumps({
+            "requirements": [{
+                "statement": "Protect authentication changes",
+                "kind": "hard",
+                "evidence": "Do not edit src/auth.py without approval.",
+            }],
+            "boundaries": [{
+                "path": "src/auth.py",
+                "evidence": "Do not edit src/auth.py without approval.",
+            }],
+        })
+        with patch.object(ContextEngine, "execute_llm_distillation", return_value=response) as extract:
+            first = self.runner.invoke(
+                cli.main,
+                ["extract", "--api-key", "test-key", "--type", "requirement", "--dir", str(self.root)],
+            )
+            second = self.runner.invoke(
+                cli.main,
+                ["extract", "--api-key", "test-key", "--type", "boundary", "--dir", str(self.root)],
+            )
+        self.assertEqual(first.exit_code, 0, first.output)
+        self.assertEqual(second.exit_code, 0, second.output)
+        self.assertEqual(extract.call_count, 2)
+        self.assertEqual(extract.call_args.kwargs["node_types"], ("boundary",))
+        self.assertTrue((engine.ctx_dir / "requirements" / "R-001.yaml").exists())
+        self.assertTrue((engine.ctx_dir / "boundaries.yaml").exists())
+
     def test_extract_redacts_secrets_before_provider_request(self):
         engine = ContextEngine(str(self.root))
         engine.init_folders()
@@ -397,7 +463,16 @@ class CommandFixTests(unittest.TestCase):
             cli._custom_redaction_patterns(engine.ctx_dir)
 
     def test_config_persists_provider_endpoint_and_model(self):
-        with patch.object(cli, "save_global_api_credentials", return_value="config-path") as save:
+        existing = {
+            "provider": "gemini",
+            "api_format": "gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "model": "old-model",
+            "api_key": "old-key",
+        }
+        with patch.object(cli, "load_global_api_credentials", return_value=existing), patch.object(
+            cli, "save_global_api_credentials", return_value="config-path"
+        ) as save:
             result = self.runner.invoke(cli.main, [
                 "config", "--api-key", "test-key", "--provider", "groq",
                 "--base-url", "https://api.groq.com/openai/v1", "--model", "llama-model",
@@ -406,7 +481,16 @@ class CommandFixTests(unittest.TestCase):
         save.assert_called_once_with("test-key", "groq", "https://api.groq.com/openai/v1", "llama-model", "openai-compatible")
 
     def test_config_accepts_keyless_ollama(self):
-        with patch.object(cli, "save_global_api_credentials", return_value="config-path") as save:
+        existing = {
+            "provider": "gemini",
+            "api_format": "gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "model": "old-model",
+            "api_key": "old-key",
+        }
+        with patch.object(cli, "load_global_api_credentials", return_value=existing), patch.object(
+            cli, "save_global_api_credentials", return_value="config-path"
+        ) as save:
             result = self.runner.invoke(cli.main, ["config", "--provider", "ollama", "--model", "qwen-local"])
         self.assertEqual(result.exit_code, 0, result.output)
         save.assert_called_once_with("", "ollama", "http://localhost:11434", "qwen-local", "ollama")
@@ -427,7 +511,15 @@ class CommandFixTests(unittest.TestCase):
         save.assert_called_once_with("stored-secret", "anthropic", "https://api.anthropic.com/v1", "new-model", "anthropic")
 
     def test_custom_provider_requires_url_and_help_shows_usage(self):
-        missing_url = self.runner.invoke(cli.main, ["config", "-k", "test-key", "-p", "my-provider"])
+        existing = {
+            "provider": "gemini",
+            "api_format": "gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "model": "old-model",
+            "api_key": "old-key",
+        }
+        with patch.object(cli, "load_global_api_credentials", return_value=existing):
+            missing_url = self.runner.invoke(cli.main, ["config", "-k", "test-key", "-p", "my-provider"])
         self.assertNotEqual(missing_url.exit_code, 0)
         self.assertIn("requires --base-url", missing_url.output)
 
@@ -473,6 +565,30 @@ class CommandFixTests(unittest.TestCase):
         content = proposed.read_text(encoding="utf-8")
         self.assertIn("status: rejected", content)
         self.assertIn("Rejected by reviewer", content)
+
+    def test_review_can_approve_extracted_boundary(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        boundary_path = engine.ctx_dir / "boundaries.yaml"
+        boundary_path.write_text(
+            "- id: B-001\n  path: src/auth.py\n  rule: no_edit_without_approval\n"
+            "  why: Authentication changes require review.\n  evidence: Do not edit src/auth.py without approval.\n"
+            "  status: proposed\n",
+            encoding="utf-8",
+        )
+        engine.compile_agents_md()
+        self.assertNotIn("src/auth.py", (self.root / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertEqual(cli._mcp_context(engine, "get_boundaries", {}), [])
+        self.assertTrue(any("Boundary 'B-001' is awaiting review." in item for item in engine.check_graph_validity(strict=True)))
+        result = self.runner.invoke(
+            cli.main,
+            ["review", "--id", "B-001", "--approve", "--yes", "--dir", str(self.root)],
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        boundaries = YAML().load(boundary_path.read_text(encoding="utf-8"))
+        self.assertEqual(boundaries[0]["status"], "active")
+        self.assertIn("src/auth.py", (self.root / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertEqual(len(cli._mcp_context(engine, "get_boundaries", {})), 1)
 
     def test_resolve_replaces_stale_requirement_and_rechecks_graph(self):
         engine = ContextEngine(str(self.root))
@@ -580,6 +696,27 @@ class CommandFixTests(unittest.TestCase):
             result = ContextEngine(str(self.root)).execute_llm_distillation("input", "key", base_url="https://api.example/v1")
         self.assertEqual(result, "{}")
         self.assertEqual(urlopen.call_args.args[0].full_url, "https://api.example/v1/chat/completions")
+
+    def test_llm_prompt_contains_only_requested_node_types(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=Response()) as urlopen:
+            ContextEngine(str(self.root)).execute_llm_distillation(
+                "input", "key", base_url="https://api.example/v1", node_types=("boundary",)
+            )
+        request_data = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        system_prompt = request_data["messages"][0]["content"]
+        self.assertIn('"boundaries"', system_prompt)
+        self.assertNotIn('"requirements"', system_prompt)
+        self.assertNotIn('"decisions"', system_prompt)
 
     def test_llm_protocol_adapters_parse_provider_responses(self):
         cases = [

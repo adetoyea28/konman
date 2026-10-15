@@ -165,6 +165,8 @@ class ContextEngine:
                                 violations.append(f"Duplicate boundary ID '{boundary_id}'.")
                             if boundary_id:
                                 boundary_ids.add(boundary_id)
+                            if boundary.get("status") == "proposed" and strict:
+                                violations.append(f"Boundary '{boundary_id or boundary.get('path')}' is awaiting review.")
                             for requirement_id in boundary.get("constrains", []):
                                 if requirement_id not in nodes["requirements"]:
                                     violations.append(f"Boundary '{boundary_id or boundary.get('path')}' references missing requirement '{requirement_id}'.")
@@ -237,21 +239,28 @@ class ContextEngine:
         model_name: str = "gpt-4o-mini",
         base_url: str = "https://api.openai.com/v1",
         api_format: str = "openai-compatible",
+        node_types=("requirement", "decision"),
     ) -> str:
         """Extract candidate context nodes through a supported provider API format."""
         import urllib.request
         import json
 
+        schemas = {
+            "requirement": '"requirements": [{ "statement": "...", "kind": "hard|preference", "why": "...", "evidence": "exact quote" }]',
+            "decision": '"decisions": [{ "chosen": "...", "mode": "compared|default|forced|taste", "reason": "...", "evidence": "exact quote" }]',
+            "boundary": '"boundaries": [{ "path": "...", "rule": "...", "why": "...", "evidence": "exact quote" }]',
+        }
+        if not node_types or any(node_type not in schemas for node_type in node_types):
+            raise ValueError("node_types must contain supported context node types.")
+        output_schema = ",\n".join(schemas[node_type] for node_type in node_types)
         system_prompt = (
             "You are the extraction engine for konman (Context Manager).\n"
             "Your job is to read raw development logs/transcripts and distill architectural context.\n"
             "Only create requirements explicitly stated by a human. Do not infer intent or alternatives.\n"
+            "Only create requested node types. A boundary requires an explicit human instruction to protect a specific path; do not invent protected paths or constraints.\n"
             "Return proposed nodes, not approved facts. Include a short verbatim evidence quote for each node.\n"
             "Format output strictly as raw JSON text matching this syntax without markdown formatting backticks:\n"
-            "{\n"
-            "  \"requirements\": [{ \"statement\": \"...\", \"kind\": \"hard|preference\", \"why\": \"...\", \"evidence\": \"exact quote\" }],\n"
-            "  \"decisions\": [{ \"chosen\": \"...\", \"mode\": \"compared|default|forced|taste\", \"reason\": \"...\", \"evidence\": \"exact quote\" }]\n"
-            "}"
+            f"{{\n  {output_schema}\n}}"
         )
 
         try:
@@ -350,6 +359,10 @@ class ContextEngine:
             boundaries = self.yaml.load(boundaries_path.read_text(encoding="utf-8")) or []
             if isinstance(boundaries, dict):
                 boundaries = [boundaries]
+            boundaries = [
+                item for item in boundaries
+                if isinstance(item, dict) and item.get("status") not in ("proposed", "rejected")
+            ]
             if boundaries:
                 summary.extend(["", "### Protected Paths"])
                 summary.extend(f"- **{item.get('path', 'unknown')}**: {item.get('why', item.get('rule', 'protected'))}" for item in boundaries)

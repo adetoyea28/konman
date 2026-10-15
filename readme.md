@@ -1,8 +1,14 @@
-# konman (Context Manager) v1.1.0a2 Alpha
+# konman (Context Manager) v1.1.1a1 Alpha
 
 **Experimental alpha:** Konman is being tested by early users. Generated adapters and parser fixtures do not prove that every vendor client/version will invoke its hooks. Verify your own tool with `konman doctor`; do not treat prompts or Git hooks as a security boundary. Extraction proposes context for human review and can send redacted transcript text to the configured provider.
 
 Konman keeps developer context in version-controlled project data rather than only in chat sessions.
+
+## What's New in 1.1.1a1
+
+- Select the context node types to extract with repeatable `konman extract --type` options. Requirements, decisions, and boundaries can be extracted, and later runs can process additional types from the same captures.
+- Extracted boundaries are proposed for review like other extracted nodes. They become active context only after approval with `konman review --id B-001`.
+- Switching providers with `konman config --provider` now uses the selected provider's defaults rather than silently reusing the previous provider's API format, endpoint, or credential. Partial updates to the currently configured provider continue to reuse its saved settings.
 
 ---
 
@@ -30,7 +36,7 @@ While *What, Where, When,* and *How* can easily be recovered by indexing raw cod
 Ensure you have Python 3.10+ installed. For alpha testing from a source checkout, install the current tree:
 
 ```bash
-pip install konman==1.1.0a2
+pip install konman==1.1.1a1
 ```
 
 Verify your global environment configuration setup by triggering the structured help display:
@@ -146,7 +152,7 @@ Kiro IDE 1.x and CLI V3 load standalone hook files. Steering remains the static 
 | **`disable-hooks`** | `konman disable-hooks` | Removes only the marked Konman block; unrelated pre-commit hook content is preserved. |
 | **`check`** | `konman check [--strict]` | Read-only schema/reference/staleness audit; `--strict` also fails on proposed nodes. Used by the optional pre-commit hook. |
 | **`doctor`** | `konman doctor [--source name] [--check-api]` | Read-only environment, adapter, credential, and optional endpoint diagnostics. |
-| **`review`** | `konman review [--id NODE_ID] [--approve|--reject] [--edit]` | Inspect and explicitly approve, edit, or reject proposed nodes. |
+| **`review`** | `konman review [--id NODE_ID] [--approve|--reject] [--edit]` | Inspect and explicitly approve, edit, or reject proposed requirements, decisions, and boundaries. |
 
 ### 🔌 Context Extraction & Lifecycle Pipelines
 
@@ -156,7 +162,7 @@ Kiro IDE 1.x and CLI V3 load standalone hook files. Steering remains the static 
 | **`tail`** | `konman tail` | Deprecated Copilot-only alias for `backfill --source copilot`. |
 | **`clean`** | `konman clean --older-than DAYS [--dry-run]` | Previews or explicitly removes old raw capture files. |
 | **`mine`** | `konman mine -c [count]` | Parses your local Git commit history trail to extract structural reasoning clues from message text blocks. |
-| **`extract`** | `konman extract [--provider name] [--api-format format] [--model name] [--base-url url]` | Sends unprocessed captures to a supported provider API and writes quote-grounded `proposed` YAML nodes for human review. |
+| **`extract`** | `konman extract [--provider name] [--api-format format] [--model name] [--base-url url] [--type requirement|decision|boundary]` | Sends unprocessed captures to a supported provider API and writes quote-grounded `proposed` nodes for human review. Repeat `--type` to select multiple node types; by default all types are extracted. |
 | **`handoff`** | `konman handoff [from] [to]` | Writes a context pack under `.context/state/history/` and configures the destination adapter. |
 | **`mcp`** | `konman mcp [--dir project]` | Runs the read-only Konman MCP server over stdio with context, boundary, and decision-search tools. |
 
@@ -172,7 +178,16 @@ konman config --api-key "$GROQ_API_KEY" --provider groq --model "$GROQ_MODEL"
 
 # Configure any custom endpoint that implements a supported API format.
 konman config --api-key "$LLM_API_KEY" --provider my-provider --api-format openai-compatible --base-url https://llm.example/v1 --model my-model
+```
 
+Extract only requirements, decisions, or boundaries by selecting one or more types. Repeat `--type` to request multiple kinds. Without the option, extraction requests all supported types.
+
+```bash
+konman extract --type requirement
+konman extract --type decision --type boundary
+```
+
+```bash
 # Local Ollama does not require an API key.
 konman config --provider ollama --model llama3.2
 konman extract
@@ -180,7 +195,7 @@ konman doctor --check-api
 konman review
 ```
 
-With no arguments, `konman config` displays saved non-secret settings. Use `konman config --migrate` for legacy plaintext settings and `konman config --clear` to remove configuration. `konman extract` uses saved settings or one-off `--provider`, `--api-format`, `--base-url`, `--model`, and `--api-key` values. `KONMAN_API_KEY` and `KONMAN_BASE_URL` are supported; `OPENAI_API_KEY` and `OPENAI_BASE_URL` remain aliases. Extraction results stay `proposed` until approved with `konman review`.
+With no arguments, `konman config` displays saved non-secret settings. Use `konman config --migrate` for legacy plaintext settings and `konman config --clear` to remove configuration. `konman extract` uses saved settings or one-off `--provider`, `--api-format`, `--base-url`, `--model`, and `--api-key` values. `KONMAN_API_KEY` and `KONMAN_BASE_URL` are supported; `OPENAI_API_KEY` and `OPENAI_BASE_URL` remain aliases. When changing to a different provider with `konman config --provider`, supply that provider's required credentials and any custom endpoint or API format; settings from the previous provider are not inherited. Omitting `--provider` or updating the currently configured provider preserves its saved settings. Extraction results stay `proposed` until approved with `konman review`; use `konman review` to list proposals and `konman review --id B-001` to inspect a boundary proposal.
 
 Raw transcript data is sensitive. Konman applies best-effort credential-pattern redaction before capture and upload, but this is not a guarantee that all secrets or personal data are detected. Inspect captures and use `konman clean` for explicit retention cleanup. Add project-specific patterns to `.context/manifest.yaml`:
 
