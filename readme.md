@@ -1,10 +1,10 @@
-# konman (Context Manager) v1.1.3a2 Alpha
+# konman (Context Manager) v1.1.3a3 Alpha
 
 **Experimental alpha:** Konman is being tested by early users. Generated adapters and parser fixtures do not prove that every vendor client/version will invoke its hooks. Verify your own tool with `konman doctor`; do not treat prompts or Git hooks as a security boundary. Extraction proposes context for human review and can send redacted transcript text to the configured provider.
 
 Konman keeps developer context in version-controlled project data rather than only in chat sessions.
 
-## What's New in 1.1.3a2
+## What's New in 1.1.3a3
 
 - Track first-class Objects, Evidence, Changes, Questions, and Risks alongside requirements, decisions, and protected boundaries. These records support extraction, review, resolution, validation, state, handoff, MCP, and generated documentation.
 - `konman mine` now proposes structured Change and Evidence records for commit messages containing explicit reasoning clues.
@@ -49,13 +49,13 @@ While *What, Where, When,* and *How* can easily be recovered by indexing raw cod
 Ensure you have Python 3.10+ installed. Install the core library for Markdown documentation:
 
 ```bash
-pip install konman==1.1.3a2
+pip install konman==1.1.3a3
 ```
 
 To enable PDF documentation generation, install the `pdf` optional dependency extra:
 
 ```bash
-pip install "konman[pdf]==1.1.3a2"
+pip install "konman[pdf]==1.1.3a3"
 ```
 
 Verify your global environment configuration setup by triggering the structured help display:
@@ -85,7 +85,7 @@ This deploys the underlying `.context/` data graph infrastructure:
 Install the GUI extra to browse the linked context graph and manage records in a local Streamlit interface:
 
 ```bash
-pip install "konman[gui]==1.1.3a2"
+pip install "konman[gui]==1.1.3a3"
 konman gui
 ```
 
