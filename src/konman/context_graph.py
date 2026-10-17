@@ -12,12 +12,14 @@ from ruamel.yaml import YAML
 
 from konman.engine import ContextEngine
 from konman.models import (
+    BOUNDARY_RELATIONSHIP_FIELDS,
     BoundaryRule,
     Change,
     ContextObject,
     Decision,
     Evidence,
     Question,
+    RELATED_NODE_TYPES,
     Requirement,
     Risk,
 )
@@ -49,7 +51,7 @@ TYPE_TITLES = {
 TEMPLATES = {
     "requirement": {"statement": "Describe the constraint", "kind": "hard", "status": "active", "evidence_ids": []},
     "decision": {"chosen": "Chosen option", "mode": "default", "considered": [], "status": "active", "evidence_ids": []},
-    "boundary": {"path": "src/path", "rule": "no_edit_without_approval", "constrains": [], "status": "active", "evidence_ids": []},
+    "boundary": {"path": "src/path", "rule": "no_edit_without_approval", "constrains": [], "risks": [], "questions": [], "status": "active", "evidence_ids": []},
     "evidence": {"source_type": "human", "excerpt": "Supporting evidence", "related_nodes": [], "status": "active"},
     "change": {"summary": "Describe the change", "files": [], "implements": [], "affects": [], "evidence": [], "status": "proposed"},
     "question": {"question": "What remains unknown?", "requirements": [], "decisions": [], "objects": [], "evidence": [], "status": "open"},
@@ -60,7 +62,6 @@ TEMPLATES = {
 REFERENCE_FIELDS = {
     ("requirement", "evidence_ids"): ("evidence", "Evidence"),
     ("decision", "evidence_ids"): ("evidence", "Evidence"),
-    ("boundary", "constrains"): ("requirement", "Requirement"),
     ("boundary", "evidence_ids"): ("evidence", "Evidence"),
     ("evidence", "related_nodes"): ("any", "Context node"),
     ("change", "implements"): ("decision", "Decision"),
@@ -76,6 +77,11 @@ REFERENCE_FIELDS = {
     ("risk", "evidence"): ("evidence", "Evidence"),
     ("object", "evidence"): ("evidence", "Evidence"),
 }
+
+for _field, _target_type in BOUNDARY_RELATIONSHIP_FIELDS.items():
+    REFERENCE_FIELDS[("boundary", _field)] = (_target_type, TYPE_TITLES[_target_type][:-1])
+for _node_type in RELATED_NODE_TYPES:
+    REFERENCE_FIELDS[(_node_type, "related_nodes")] = ("related", "Context node")
 
 
 class ContextDataError(ValueError):
@@ -281,10 +287,17 @@ class ContextWorkspace:
                     raise ContextDataError(f"{field} entries must be node ID strings.")
                 if target_type == "any":
                     exists = any(reference in nodes for nodes in collections.values())
+                elif target_type == "related":
+                    target_node_type = next(
+                        (kind for kind, records in collections.items() if reference in records), None
+                    )
+                    exists = target_node_type in RELATED_NODE_TYPES.get(owner_type, frozenset())
                 else:
                     exists = reference in collections[target_type]
-                if reference == current_id and not is_new:
+                if reference == current_id and not is_new and target_type != "related":
                     exists = True
+                if reference == current_id and target_type == "related":
+                    raise ContextDataError("related_nodes cannot reference the current node.")
                 if not exists:
                     raise ContextDataError(f"{field} references missing {target_title.lower()} '{reference}'.")
         if node_type == "requirement" and record.get("derives_from"):
@@ -374,7 +387,8 @@ def build_graph(snapshot: ContextSnapshot) -> tuple[list[dict], list[dict]]:
                             if evaluation.get("object_id"):
                                 link(node_id, evaluation["object_id"], "evaluates object")
             elif node_type == "boundary":
-                links_from(node_id, record, ("constrains",), "constrains")
+                for field in BOUNDARY_RELATIONSHIP_FIELDS:
+                    links_from(node_id, record, (field,), "constrains")
             elif node_type == "evidence":
                 for target in record.get("related_nodes", []) or []:
                     link(node_id, target, "evidence for")
@@ -394,5 +408,7 @@ def build_graph(snapshot: ContextSnapshot) -> tuple[list[dict], list[dict]]:
                 links_from(node_id, record, ("evidence",), "supported by")
             elif node_type == "object":
                 links_from(node_id, record, ("evidence",), "described by")
+            if node_type in RELATED_NODE_TYPES and node_type != "evidence":
+                links_from(node_id, record, ("related_nodes",), "related to")
 
     return nodes, list(edges_by_key.values())

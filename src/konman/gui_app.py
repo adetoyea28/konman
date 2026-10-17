@@ -19,6 +19,7 @@ from konman.context_graph import (
     build_graph,
 )
 from konman.engine import ContextEngine
+from konman.models import BOUNDARY_RELATIONSHIP_FIELDS, RELATED_NODE_TYPES
 
 
 NODE_COLORS = {
@@ -35,8 +36,8 @@ NODE_COLORS = {
 RELATIONSHIP_FIELDS = {
     "requirement": {"evidence_ids": "evidence"},
     "decision": {"evidence_ids": "evidence"},
-    "boundary": {"constrains": "requirement", "evidence_ids": "evidence"},
-    "evidence": {"related_nodes": "any"},
+    "boundary": {**BOUNDARY_RELATIONSHIP_FIELDS, "evidence_ids": "evidence"},
+    "evidence": {"related_nodes": tuple(sorted(RELATED_NODE_TYPES["evidence"]))},
     "change": {"implements": "decision", "affects": "requirement", "evidence": "evidence"},
     "question": {
         "requirements": "requirement", "decisions": "decision",
@@ -46,8 +47,12 @@ RELATIONSHIP_FIELDS = {
         "requirements": "requirement", "decisions": "decision",
         "changes": "change", "evidence": "evidence",
     },
-    "object": {"evidence": "evidence"},
+    "object": {"evidence": "evidence", "related_nodes": tuple(sorted(RELATED_NODE_TYPES["object"]))},
 }
+
+for _node_type, _target_types in RELATED_NODE_TYPES.items():
+    if _node_type != "object":
+        RELATIONSHIP_FIELDS.setdefault(_node_type, {})["related_nodes"] = tuple(sorted(_target_types))
 
 
 def _application_arguments() -> argparse.Namespace:
@@ -154,7 +159,9 @@ def _save_editor(workspace, snapshot, node_type: str, selected_id: str, submitte
 def _relationship_controls(st, snapshot, node_type: str, record: dict, key_prefix: str) -> dict:
     relationships = {}
     for field, target_type in RELATIONSHIP_FIELDS.get(node_type, {}).items():
-        target_types = CONTEXT_NODE_CONFIG if target_type == "any" else (target_type,)
+        target_types = tuple(CONTEXT_NODE_CONFIG) if target_type == "any" else (
+            target_type if isinstance(target_type, tuple) else (target_type,)
+        )
         available = [
             (node_id, node_type_name, target_record)
             for node_type_name in target_types
@@ -173,8 +180,7 @@ def _relationship_controls(st, snapshot, node_type: str, record: dict, key_prefi
         }
         labels = {
             node_id: (
-                f"{node_id} · {record.get(label_fields.get(kind, 'id'), '')}"
-                if kind != "any" else f"{node_id} · {record.get('name') or record.get('statement') or record.get('question') or record.get('summary') or record.get('excerpt') or record.get('path') or record.get('chosen') or record.get('id')}"
+                f"{node_id} · {TYPE_TITLES[kind]} · {record.get(label_fields.get(kind, 'id'), '')}"
             )
             for node_id, kind, record in available
         }

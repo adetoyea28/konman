@@ -5,7 +5,8 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from konman.storage import atomic_write_text, atomic_write_yaml, ensure_raw_ignored, is_raw_ignored
 from konman.models import (
-    BoundaryRule, Change, ContextObject, Decision, Evidence, Question, Requirement, Risk,
+    BOUNDARY_RELATIONSHIP_FIELDS, RELATED_NODE_TYPES, BoundaryRule, Change, ContextObject,
+    Decision, Evidence, Question, Requirement, Risk,
 )
 from konman.redaction import redact_text
 
@@ -290,7 +291,20 @@ class ContextEngine:
             "changes": node.get("changes", []),
             "evidence": node.get("evidence", []),
             "related_nodes": node.get("related_nodes", []),
+            "risks": node.get("risks", []),
+            "questions": node.get("questions", []),
         }
+        type_by_prefix = {
+            "R": "requirement", "D": "decision", "B": "boundary", "E": "evidence",
+            "C": "change", "Q": "question", "X": "risk", "O": "object",
+        }
+        collection_by_type = {
+            "requirements": "requirement", "decisions": "decision", "boundaries": "boundary",
+            "evidence": "evidence", "changes": "change", "questions": "question",
+            "risks": "risk", "objects": "object",
+        }
+        owner_id = node.get("id")
+        owner_type = type_by_prefix.get(owner_id[:1]) if isinstance(owner_id, str) else None
         for collection_name, ids in references.items():
             if collection_name == "related_nodes":
                 if not isinstance(ids, list):
@@ -305,6 +319,13 @@ class ContextEngine:
                     collection = prefixes.get(reference[:1]) if isinstance(reference, str) else None
                     if collection is None or reference not in collections.get(collection, {}):
                         violations.append(f"{owner} references missing related node '{reference}'.")
+                        continue
+                    target_type = collection_by_type[collection]
+                    allowed = RELATED_NODE_TYPES.get(owner_type, frozenset())
+                    if owner_type == "evidence":
+                        allowed = frozenset(collection_by_type.values()) - {"evidence"}
+                    if target_type not in allowed:
+                        violations.append(f"{owner} cannot link to related node '{reference}'.")
                 continue
             if not isinstance(ids, list):
                 violations.append(f"{owner} has malformed {collection_name} references.")
@@ -314,6 +335,7 @@ class ContextEngine:
                     singular = {
                         "requirements": "requirement", "decisions": "decision",
                         "objects": "object", "changes": "change", "evidence": "evidence",
+                        "risks": "risk", "questions": "question",
                     }[collection_name]
                     violations.append(f"{owner} references missing {singular} '{reference}'.")
         for reference in node.get("implements", []) if isinstance(node.get("implements", []), list) else []:
@@ -453,27 +475,162 @@ class ContextEngine:
         import json
 
         schemas = {
-            "requirement": '"requirements": [{ "statement": "...", "kind": "hard|preference", "why": "...", "evidence": "exact quote" }]',
-            "decision": '"decisions": [{ "chosen": "...", "mode": "compared|default|forced|taste", "reason": "...", "evidence": "exact quote" }]',
-            "boundary": '"boundaries": [{ "path": "...", "rule": "...", "why": "...", "evidence": "exact quote" }]',
-            "evidence": '"evidence": [{ "source_type": "transcript", "locator": "...", "excerpt": "exact quote" }]',
-            "change": '"changes": [{ "summary": "...", "files": [], "implements": [], "affects": [], "verification": "...", "evidence": "exact quote" }]',
-            "question": '"questions": [{ "question": "...", "owner": "...", "evidence": "exact quote" }]',
-            "risk": '"risks": [{ "statement": "...", "likelihood": "low|medium|high", "impact": "low|medium|high", "mitigation": "...", "evidence": "exact quote" }]',
-            "object": '"objects": [{ "name": "...", "kind": "...", "description": "...", "evidence": "exact quote" }]',
+            "requirement": ("requirements", Requirement),
+            "decision": ("decisions", Decision),
+            "boundary": ("boundaries", BoundaryRule),
+            "evidence": ("evidence", Evidence),
+            "change": ("changes", Change),
+            "question": ("questions", Question),
+            "risk": ("risks", Risk),
+            "object": ("objects", ContextObject),
         }
         if not node_types or any(node_type not in schemas for node_type in node_types):
             raise ValueError("node_types must contain supported context node types.")
-        output_schema = ",\n".join(schemas[node_type] for node_type in node_types)
+        linkable_types = {
+            "requirement": "requirements", "decision": "decisions", "change": "changes",
+            "question": "questions", "risk": "risks", "object": "objects",
+        }
+        known_nodes = {node_type: [] for node_type in linkable_types}
+        for node_type, folder in linkable_types.items():
+            directory = self.ctx_dir / folder
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("*.yaml")):
+                try:
+                    record = self.yaml.load(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if isinstance(record, dict) and isinstance(record.get("id"), str):
+                    label_field = schemas[node_type][1].model_fields
+                    label = next((record.get(field) for field in ("statement", "chosen", "summary", "question", "name") if field in label_field), "")
+                    known_nodes[node_type].append({"id": record["id"], "label": str(label or "")[:160]})
+        known_context_nodes = dict(known_nodes)
+        for node_type, folder, label_field in (
+            ("boundary", "boundaries", "path"), ("evidence", "evidence", "excerpt"),
+        ):
+            known_context_nodes[node_type] = []
+            path = self.ctx_dir / f"{folder}.yaml" if node_type == "boundary" else self.ctx_dir / folder
+            paths = [path] if node_type == "boundary" and path.is_file() else (
+                sorted(path.glob("*.yaml")) if path.is_dir() else []
+            )
+            for record_path in paths:
+                try:
+                    values = self.yaml.load(record_path.read_text(encoding="utf-8")) or []
+                except Exception:
+                    continue
+                values = [values] if isinstance(values, dict) else values
+                if not isinstance(values, list):
+                    continue
+                known_context_nodes[node_type].extend(
+                    {"id": item["id"], "label": str(item.get(label_field) or "")[:160]}
+                    for item in values if isinstance(item, dict) and isinstance(item.get("id"), str)
+                )
+        ids_by_type = {
+            node_type: [item["id"] for item in values]
+            for node_type, values in known_context_nodes.items()
+        }
+        all_known_ids = [node_id for values in ids_by_type.values() for node_id in values]
+        schema_link_targets = {
+            "requirement": {
+                "related_nodes": RELATED_NODE_TYPES["requirement"], "derives_from": {"requirement"},
+                "evidence_ids": {"evidence"},
+            },
+            "decision": {"related_nodes": RELATED_NODE_TYPES["decision"], "evidence_ids": {"evidence"}},
+            "boundary": {
+                **{field: {target_type} for field, target_type in BOUNDARY_RELATIONSHIP_FIELDS.items()},
+                "evidence_ids": {"evidence"},
+            },
+            "evidence": {"related_nodes": RELATED_NODE_TYPES["evidence"]},
+            "change": {
+                "implements": {"decision"}, "affects": {"requirement"}, "evidence": {"evidence"},
+                "related_nodes": RELATED_NODE_TYPES["change"],
+            },
+            "question": {
+                "requirements": {"requirement"}, "decisions": {"decision"}, "objects": {"object"},
+                "evidence": {"evidence"},
+                "related_nodes": RELATED_NODE_TYPES["question"],
+            },
+            "risk": {
+                "requirements": {"requirement"}, "decisions": {"decision"}, "changes": {"change"},
+                "evidence": {"evidence"},
+                "related_nodes": RELATED_NODE_TYPES["risk"],
+            },
+            "object": {"evidence": {"evidence"}, "related_nodes": RELATED_NODE_TYPES["object"]},
+        }
+        output_properties = {}
+        definitions = {}
+        for node_type in node_types:
+            output_key, model = schemas[node_type]
+            node_schema = model.model_json_schema()
+            definitions.update(node_schema.pop("$defs", {}))
+            node_schema["properties"].pop("id", None)
+            node_schema["properties"]["status"] = {
+                "type": "string", "enum": ["proposed"], "default": "proposed",
+            }
+            node_schema["properties"]["evidence_quote"] = {
+                "type": "string",
+                "description": "A short verbatim quote from human-authored source text supporting this candidate.",
+            }
+            for field_name, target_types in schema_link_targets[node_type].items():
+                field_schema = node_schema["properties"].get(field_name)
+                if field_schema is None:
+                    continue
+                target_ids = [node_id for target_type in target_types for node_id in ids_by_type.get(target_type, [])]
+                if field_name == "derives_from":
+                    field_schema["enum"] = target_ids
+                else:
+                    field_schema["items"]["enum"] = target_ids
+            node_schema["required"] = [
+                field for field in node_schema.get("required", []) if field != "id"
+            ]
+            node_schema["required"] = list(dict.fromkeys(
+                [*node_schema["required"], "status", "evidence_quote"]
+            ))
+            node_schema["additionalProperties"] = False
+            output_properties[output_key] = {
+                "type": "array", "items": node_schema,
+            }
+
+        for definition in definitions.values():
+            for field_name in ("status", "verdict"):
+                field_schema = definition.get("properties", {}).get(field_name)
+                if field_schema is not None:
+                    field_schema.update({"type": "string", "enum": ["proposed"], "default": "proposed"})
+        if "ConsideredObject" in definitions:
+            object_id_schema = definitions["ConsideredObject"].get("properties", {}).get("object_id")
+            if object_id_schema is not None:
+                object_id_schema["enum"] = ids_by_type["object"]
+        if "Evaluation" in definitions:
+            evaluation_properties = definitions["Evaluation"].get("properties", {})
+            if "req" in evaluation_properties:
+                evaluation_properties["req"]["enum"] = ids_by_type["requirement"]
+            if "object_id" in evaluation_properties:
+                evaluation_properties["object_id"]["enum"] = ids_by_type["object"]
+        output_schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": output_properties,
+            "required": list(output_properties),
+            "additionalProperties": False,
+        }
+        if definitions:
+            output_schema["$defs"] = definitions
         system_prompt = (
             "You are the extraction engine for konman (Context Manager).\n"
-            "Your job is to read raw development logs/transcripts and distill architectural context.\n"
-            "Only create requirements explicitly stated by a human. Do not infer intent or alternatives.\n"
-            "Only create requested node types. A boundary requires an explicit human instruction to protect a specific path; do not invent protected paths or constraints.\n"
-            "Only extract facts supported by explicit human text. Changes must describe an explicitly stated code change, not assume that code was modified. Risks and questions must be explicit, not speculative.\n"
-            "Return proposed nodes, not approved facts. Include a short verbatim evidence quote for each node.\n"
-            "Format output strictly as raw JSON text matching this syntax without markdown formatting backticks:\n"
-            f"{{\n  {output_schema}\n}}"
+            "Read human prompts, development logs, and transcripts to identify architectural context.\n"
+            "Infer candidate requirements, decisions, objects, risks, questions, and boundaries when the human-authored evidence supports the inference. "
+            "Use why, reason, description, mitigation, or question fields to make the inference and its uncertainty clear.\n"
+            "Link ordinary nodes with related_nodes using only existing, allowed node IDs shown below. Requirements, decisions, changes, questions, risks, and objects may link to one another. Evidence related_nodes means 'evidence for' and may target any non-evidence node.\n"
+            "Boundaries are human-set and authoritative: only a boundary may link to requirements, risks, and questions, using constrains, risks, and questions respectively. Ordinary nodes cannot link to boundaries.\n"
+            "Boundaries are human-set and authoritative: only a boundary may link outward, using constrains for requirements, risks for risks, and questions for questions. Never create a link from another node to a boundary.\n"
+            f"Existing context nodes available for linking: {json.dumps(known_context_nodes, ensure_ascii=False)}\n"
+            "Never invent source facts, entities, decisions, or file paths. A boundary needs a concrete path supported by the source and a stated or clearly implied constraint.\n"
+            "Changes must describe an explicitly stated change; do not assume code was modified. Only return node types requested in the schema.\n"
+            "Every returned node is only a candidate for human review: set every status to proposed and every decision considered-item verdict to proposed. "
+            "Never imply that a decision, requirement, risk, or boundary has been approved or is active.\n"
+            "Include a short exact quote from human-authored text in evidence_quote for each node. Do not use assistant-authored text as evidence.\n"
+            "Return raw JSON only, without markdown fences, matching this JSON Schema:\n"
+            f"{json.dumps(output_schema, ensure_ascii=False, indent=2)}"
         )
 
         try:

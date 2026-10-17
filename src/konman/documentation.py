@@ -17,33 +17,33 @@ from konman.storage import atomic_write_bytes, atomic_write_text
 _NODE_FIELDS = {
     "requirements": (
         "id", "statement", "kind", "priority", "source", "why",
-        "derives_from", "status", "added", "evidence", "evidence_ids", "review",
+        "derives_from", "status", "added", "evidence", "evidence_ids", "related_nodes", "review",
         "rejection_reason",
     ),
     "decisions": (
         "id", "chosen", "mode", "decided", "considered", "tradeoff",
-        "reason", "status", "evidence", "evidence_ids", "review", "rejection_reason",
+        "reason", "status", "evidence", "evidence_ids", "related_nodes", "review", "rejection_reason",
     ),
     "boundaries": (
-        "id", "path", "constrains", "rule", "why", "status",
+        "id", "path", "constrains", "risks", "questions", "rule", "why", "status",
         "evidence", "evidence_ids", "review", "rejection_reason",
     ),
-    "objects": ("id", "name", "kind", "description", "properties", "evidence", "status"),
+    "objects": ("id", "name", "kind", "description", "properties", "evidence", "related_nodes", "status"),
     "evidence": (
         "id", "source_type", "locator", "excerpt", "captured_by",
         "captured_at", "related_nodes", "status",
     ),
     "changes": (
         "id", "summary", "commit", "author", "changed_at", "files",
-        "implements", "affects", "evidence", "verification", "status",
+        "implements", "affects", "evidence", "verification", "related_nodes", "status",
     ),
     "questions": (
         "id", "question", "status", "answer", "owner", "requirements",
-        "decisions", "objects", "evidence", "resolution",
+        "decisions", "objects", "evidence", "resolution", "related_nodes",
     ),
     "risks": (
         "id", "statement", "likelihood", "impact", "mitigation", "status",
-        "requirements", "decisions", "changes", "evidence", "resolution",
+        "requirements", "decisions", "changes", "evidence", "resolution", "related_nodes",
     ),
 }
 

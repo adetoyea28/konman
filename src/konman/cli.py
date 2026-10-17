@@ -20,7 +20,8 @@ from konman.engine import ContextEngine
 from konman.context_graph import CONTEXT_NODE_CONFIG
 from konman.documentation import render_context_markdown, write_markdown, write_pdf
 from konman.models import (
-    BoundaryRule, Change, ContextObject, Decision, Evidence, Question, Requirement, Risk,
+    BOUNDARY_RELATIONSHIP_FIELDS, BoundaryRule, Change, ContextObject, Decision,
+    Evidence, Question, RELATED_NODE_TYPES, Requirement, Risk,
 )
 from konman.redaction import redact_text, redact_value
 from konman.storage import atomic_write_json, atomic_write_text, atomic_write_yaml, create_new_bytes, is_raw_ignored
@@ -1344,6 +1345,16 @@ def _write_quote_evidence(engine, quote, model, today, capture_id, chunk_id, yam
     )
 
 
+def _known_references(values, known_ids, target_types) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [
+        reference for reference in values
+        if isinstance(reference, str)
+        and any(reference in known_ids.get(target_type, set()) for target_type in target_types)
+    ]
+
+
 @main.command()
 @click.option("--api-key", envvar=["KONMAN_API_KEY", "OPENAI_API_KEY"], help="Provider API key (or set KONMAN_API_KEY).")
 @click.option("--provider", default=None, help="Provider label; defaults to the saved provider.")
@@ -1409,6 +1420,30 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
     processed_dir.mkdir(parents=True, exist_ok=True)
     yaml = YAML()
     yaml.preserve_quotes = True
+    known_ids = {node_type: set() for node_type in CONTEXT_NODE_CONFIG}
+    for node_type, (_, folder, _, _) in CONTEXT_NODE_CONFIG.items():
+        if node_type == "boundary":
+            boundary_path = engine.ctx_dir / "boundaries.yaml"
+            if boundary_path.exists():
+                try:
+                    boundary_values = yaml.load(boundary_path.read_text(encoding="utf-8")) or []
+                    boundary_values = [boundary_values] if isinstance(boundary_values, dict) else boundary_values
+                    known_ids[node_type].update(
+                        item["id"] for item in boundary_values
+                        if isinstance(item, dict) and isinstance(item.get("id"), str)
+                    )
+                except Exception:
+                    pass
+            continue
+        folder_path = engine.ctx_dir / folder
+        if folder_path.is_dir():
+            for node_path in folder_path.glob("*.yaml"):
+                try:
+                    item = yaml.load(node_path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if isinstance(item, dict) and isinstance(item.get("id"), str):
+                    known_ids[node_type].add(item["id"])
     today = datetime.now().strftime("%Y-%m-%d")
     created = 0
     failed = 0
@@ -1480,7 +1515,7 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                 for requirement in requirements if "requirement" in types_to_extract else []:
                     if not isinstance(requirement, dict):
                         continue
-                    quote = requirement.get("evidence")
+                    quote = requirement.get("evidence_quote", requirement.get("evidence"))
                     if not isinstance(quote, str) or not quote.strip() or quote not in human_evidence or quote not in redacted_text:
                         continue
                     if not requirement.get("statement") or requirement.get("kind") not in ("hard", "preference"):
@@ -1492,9 +1527,14 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                         engine.ctx_dir / "requirements", "R", {
                             "statement": str(requirement["statement"]),
                             "kind": requirement["kind"],
+                            "priority": requirement.get("priority", "medium"),
                             "why": requirement.get("why"),
-                            "evidence": quote,
+                            "derives_from": requirement.get("derives_from") if isinstance(requirement.get("derives_from"), str) and requirement["derives_from"] in known_ids["requirement"] else None,
+                            "added": requirement.get("added", "standard"),
                             "evidence_ids": [evidence_id],
+                            "related_nodes": _known_references(
+                                requirement.get("related_nodes", []), known_ids, RELATED_NODE_TYPES["requirement"]
+                            ),
                             "source": {"who": f"llm:{model}", "when": today},
                             "status": "proposed",
                         }, capture_id, chunk_id, yaml,
@@ -1511,7 +1551,7 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                 for decision in decisions if "decision" in types_to_extract else []:
                     if not isinstance(decision, dict):
                         continue
-                    quote = decision.get("evidence")
+                    quote = decision.get("evidence_quote", decision.get("evidence"))
                     if not isinstance(quote, str) or not quote.strip() or quote not in human_evidence or quote not in redacted_text:
                         continue
                     if not decision.get("chosen") or decision.get("mode") not in ("compared", "default", "forced", "taste"):
@@ -1519,15 +1559,25 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                     evidence_id, evidence_created = _write_quote_evidence(
                         engine, quote, model, today, capture_id, chunk_id, yaml,
                     )
+                    considered = decision.get("considered")
+                    if not isinstance(considered, list) or not considered:
+                        considered = [{"object": str(decision["chosen"])}]
+                    considered = [
+                        {**item, "verdict": "proposed"}
+                        for item in considered if isinstance(item, dict)
+                    ]
                     node_id, was_created = _write_context_node(
                         engine.ctx_dir / "decisions", "D", {
                             "chosen": str(decision["chosen"]),
                             "mode": decision["mode"],
                             "decided": {"who": f"llm:{model}", "when": today},
-                            "considered": [{"object": str(decision["chosen"]), "properties": [], "evaluations": [], "verdict": "proposed"}],
+                            "considered": considered,
+                            "tradeoff": decision.get("tradeoff"),
                             "reason": decision.get("reason"),
-                            "evidence": quote,
                             "evidence_ids": [evidence_id],
+                            "related_nodes": _known_references(
+                                decision.get("related_nodes", []), known_ids, RELATED_NODE_TYPES["decision"]
+                            ),
                             "status": "proposed",
                         }, capture_id, chunk_id, yaml,
                     )
@@ -1543,7 +1593,7 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                 for boundary in boundaries if "boundary" in types_to_extract else []:
                     if not isinstance(boundary, dict):
                         continue
-                    quote = boundary.get("evidence")
+                    quote = boundary.get("evidence_quote", boundary.get("evidence"))
                     if not isinstance(quote, str) or not quote.strip() or quote not in human_evidence or quote not in redacted_text:
                         continue
                     if not isinstance(boundary.get("path"), str) or not boundary["path"].strip():
@@ -1555,6 +1605,9 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                         engine.ctx_dir / "boundaries.yaml", {
                             "path": boundary["path"].strip(),
                             "rule": boundary.get("rule") or "no_edit_without_approval",
+                            "constrains": _known_references(boundary.get("constrains", []), known_ids, {BOUNDARY_RELATIONSHIP_FIELDS["constrains"]}),
+                            "risks": _known_references(boundary.get("risks", []), known_ids, {BOUNDARY_RELATIONSHIP_FIELDS["risks"]}),
+                            "questions": _known_references(boundary.get("questions", []), known_ids, {BOUNDARY_RELATIONSHIP_FIELDS["questions"]}),
                             "why": boundary.get("why"),
                             "evidence": quote,
                             "evidence_ids": [evidence_id],
@@ -1573,7 +1626,7 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                 for evidence in evidence_records if "evidence" in types_to_extract else []:
                     if not isinstance(evidence, dict):
                         continue
-                    quote = evidence.get("excerpt")
+                    quote = evidence.get("evidence_quote", evidence.get("excerpt"))
                     if not isinstance(quote, str) or not quote.strip() or quote not in human_evidence or quote not in redacted_text:
                         continue
                     source_type = evidence.get("source_type", "transcript")
@@ -1585,6 +1638,9 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                         "excerpt": quote,
                         "captured_by": f"llm:{model}",
                         "captured_at": today,
+                        "related_nodes": _known_references(
+                            evidence.get("related_nodes", []), known_ids, set(known_ids) - {"evidence"}
+                        ),
                         "status": "proposed",
                     }
                     node_id, was_created = _write_context_node(
@@ -1599,14 +1655,23 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                 for node_type, records_to_write, fields in (
                     ("change", changes, {
                         "summary": "summary", "files": "files", "implements": "implements",
-                        "affects": "affects", "verification": "verification",
+                        "affects": "affects", "verification": "verification", "related_nodes": "related_nodes",
                     }),
-                    ("question", questions, {"question": "question", "owner": "owner"}),
+                    ("question", questions, {
+                        "question": "question", "owner": "owner", "requirements": "requirements",
+                        "decisions": "decisions", "objects": "objects", "resolution": "resolution",
+                        "related_nodes": "related_nodes",
+                    }),
                     ("risk", risks, {
                         "statement": "statement", "likelihood": "likelihood",
-                        "impact": "impact", "mitigation": "mitigation",
+                        "impact": "impact", "mitigation": "mitigation", "requirements": "requirements",
+                        "decisions": "decisions", "changes": "changes", "resolution": "resolution",
+                        "related_nodes": "related_nodes",
                     }),
-                    ("object", objects, {"name": "name", "kind": "kind", "description": "description"}),
+                    ("object", objects, {
+                        "name": "name", "kind": "kind", "description": "description",
+                        "properties": "properties", "related_nodes": "related_nodes",
+                    }),
                 ):
                     if node_type not in types_to_extract:
                         continue
@@ -1614,7 +1679,7 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                     for candidate in records_to_write:
                         if not isinstance(candidate, dict):
                             continue
-                        quote = candidate.get("evidence")
+                        quote = candidate.get("evidence_quote", candidate.get("evidence"))
                         if not isinstance(quote, str) or not quote.strip() or quote not in human_evidence or quote not in redacted_text:
                             continue
                         if not candidate.get(fields[next(iter(fields))]):
@@ -1627,6 +1692,22 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                             for key, source_key in fields.items()
                             if candidate.get(source_key) is not None
                         }
+                        field_targets = {
+                            "change": {"implements": {"decision"}, "affects": {"requirement"}},
+                            "question": {
+                                "requirements": {"requirement"}, "decisions": {"decision"}, "objects": {"object"},
+                            },
+                            "risk": {
+                                "requirements": {"requirement"}, "decisions": {"decision"}, "changes": {"change"},
+                            },
+                        }.get(node_type, {})
+                        for field, target_types in field_targets.items():
+                            payload[field] = _known_references(payload.get(field, []), known_ids, target_types)
+                        allowed_targets = RELATED_NODE_TYPES.get(node_type, frozenset())
+                        if "related_nodes" in payload:
+                            payload["related_nodes"] = _known_references(
+                                payload["related_nodes"], known_ids, allowed_targets
+                            )
                         if node_type == "change":
                             files = payload.get("files", [])
                             if files is None:
@@ -1636,8 +1717,6 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                             if not isinstance(files, list) or any(not isinstance(path, str) for path in files):
                                 continue
                             payload["files"] = files
-                            payload["implements"] = []
-                            payload["affects"] = []
                             payload.update({
                                 "commit": None,
                                 "author": f"llm:{model}",
@@ -1647,12 +1726,10 @@ def extract(api_key, provider, api_format, model, base_url, node_types, dir):
                             })
                         elif node_type == "question":
                             payload.update({
-                                "requirements": [], "decisions": [], "objects": [],
                                 "evidence": [evidence_id], "status": "proposed",
                             })
                         elif node_type == "risk":
                             payload.update({
-                                "requirements": [], "decisions": [], "changes": [],
                                 "evidence": [evidence_id], "status": "proposed",
                             })
                         else:

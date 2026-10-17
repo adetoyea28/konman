@@ -2,6 +2,20 @@ from pydantic import BaseModel, Field
 from datetime import date, datetime
 from typing import List, Optional, Literal, Dict, Any, Union
 
+RELATED_NODE_TYPES = {
+    node_type: frozenset({"requirement", "decision", "change", "question", "risk", "object"})
+    for node_type in ("requirement", "decision", "change", "question", "risk", "object")
+}
+RELATED_NODE_TYPES["evidence"] = frozenset({
+    "requirement", "decision", "boundary", "change", "question", "risk", "object",
+})
+BOUNDARY_RELATIONSHIP_FIELDS = {
+    "constrains": "requirement",
+    "risks": "risk",
+    "questions": "question",
+}
+BOUNDARY_TARGET_TYPES = frozenset(BOUNDARY_RELATIONSHIP_FIELDS.values())
+
 class Requirement(BaseModel):
     id: str
     statement: str
@@ -13,6 +27,7 @@ class Requirement(BaseModel):
     status: Literal["active", "proposed", "rejected", "superseded", "disproven"] = "active"
     added: Optional[Literal["standard", "retroactive"]] = "standard"
     evidence_ids: List[str] = Field(default_factory=list)
+    related_nodes: List[str] = Field(default_factory=list)
 
 class Property(BaseModel):
     key: str
@@ -42,11 +57,14 @@ class Decision(BaseModel):
     reason: Optional[str] = None
     status: Literal["active", "proposed", "rejected", "needs_review", "superseded"] = "active"
     evidence_ids: List[str] = Field(default_factory=list)
+    related_nodes: List[str] = Field(default_factory=list)
 
 class BoundaryRule(BaseModel):
     id: Optional[str] = None
     path: str
     constrains: List[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    questions: List[str] = Field(default_factory=list)
     rule: str = "no_edit_without_approval"
     why: Optional[str] = None
     status: Literal["active", "proposed", "rejected"] = "active"
@@ -75,6 +93,7 @@ class Change(BaseModel):
     evidence: List[str] = Field(default_factory=list)
     verification: Optional[str] = None
     status: Literal["proposed", "active", "rejected"] = "proposed"
+    related_nodes: List[str] = Field(default_factory=list)
 
 class Question(BaseModel):
     id: str
@@ -87,6 +106,7 @@ class Question(BaseModel):
     objects: List[str] = Field(default_factory=list)
     evidence: List[str] = Field(default_factory=list)
     resolution: Optional[str] = None
+    related_nodes: List[str] = Field(default_factory=list)
 
 class Risk(BaseModel):
     id: str
@@ -100,6 +120,7 @@ class Risk(BaseModel):
     changes: List[str] = Field(default_factory=list)
     evidence: List[str] = Field(default_factory=list)
     resolution: Optional[str] = None
+    related_nodes: List[str] = Field(default_factory=list)
 
 class ContextObject(BaseModel):
     id: str
@@ -109,3 +130,4 @@ class ContextObject(BaseModel):
     properties: List[Property] = Field(default_factory=list)
     evidence: List[str] = Field(default_factory=list)
     status: Literal["proposed", "active", "retired", "rejected"] = "active"
+    related_nodes: List[str] = Field(default_factory=list)

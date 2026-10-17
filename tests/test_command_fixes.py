@@ -109,8 +109,13 @@ class CommandFixTests(unittest.TestCase):
             encoding="utf-8",
         )
         response = json.dumps({
-            "requirements": [{"statement": "Preserve session compatibility", "kind": "hard", "evidence": quote}],
-            "decisions": [{"chosen": "Session token", "mode": "default", "reason": "Stable identifiers.", "evidence": quote}],
+            "requirements": [{"statement": "Preserve session compatibility", "kind": "hard", "priority": "high", "evidence_quote": quote}],
+            "decisions": [{
+                "chosen": "Session token", "mode": "default", "reason": "Stable identifiers.",
+                "tradeoff": "Compatibility over minimal storage.",
+                "considered": [{"object": "Session token", "verdict": "selected"}],
+                "evidence": quote,
+            }],
             "boundaries": [{"path": "src/session.py", "rule": "no_edit_without_approval", "evidence": quote}],
             "evidence": [{"source_type": "transcript", "excerpt": quote}],
             "changes": [{"summary": "Keep session parsing compatible", "files": "src/session.py", "evidence": quote}],
@@ -134,8 +139,16 @@ class CommandFixTests(unittest.TestCase):
         }
         for folder, filename in expected_files.items():
             self.assertTrue((engine.ctx_dir / folder / filename).is_file(), folder)
+            stored = YAML().load((engine.ctx_dir / folder / filename).read_text(encoding="utf-8"))
+            self.assertEqual(stored["status"], "proposed", folder)
+        requirement = YAML().load((engine.ctx_dir / "requirements" / "R-001.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(requirement["priority"], "high")
+        decision = YAML().load((engine.ctx_dir / "decisions" / "D-001.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(decision["tradeoff"], "Compatibility over minimal storage.")
+        self.assertEqual(decision["considered"][0]["verdict"], "proposed")
         boundaries = YAML().load((engine.ctx_dir / "boundaries.yaml").read_text(encoding="utf-8"))
         self.assertEqual(boundaries[0]["id"], "B-001")
+        self.assertEqual(boundaries[0]["status"], "proposed")
         self.assertEqual(YAML().load((engine.ctx_dir / "requirements" / "R-001.yaml").read_text())["evidence_ids"], ["E-001"])
         change = YAML().load((engine.ctx_dir / "changes" / "C-001.yaml").read_text())
         self.assertEqual(change["files"], ["src/session.py"])
@@ -988,6 +1001,74 @@ class CommandFixTests(unittest.TestCase):
         self.assertIn((boundary_id, requirement_id, "constrains"), links)
         self.assertEqual(engine.check_graph_validity(), [])
 
+    def test_cross_node_links_are_reciprocal_and_boundaries_only_link_outward(self):
+        engine = ContextEngine(str(self.root))
+        engine.init_folders()
+        workspace = ContextWorkspace(engine)
+        requirement_id, _ = workspace.save("requirement", {
+            "statement": "Keep the contract stable", "kind": "hard",
+        })
+        decision_id, _ = workspace.save("decision", {
+            "chosen": "Versioned API", "related_nodes": [requirement_id],
+        })
+        change_id, _ = workspace.save("change", {
+            "summary": "Version the endpoint", "related_nodes": [requirement_id, decision_id],
+        })
+        question_id, _ = workspace.save("question", {
+            "question": "Which clients must migrate?", "related_nodes": [change_id],
+        })
+        risk_id, _ = workspace.save("risk", {
+            "statement": "Older clients may fail", "related_nodes": [decision_id, change_id, question_id],
+        })
+        object_id, _ = workspace.save("object", {
+            "name": "API client", "related_nodes": [risk_id, question_id],
+        })
+        snapshot = workspace.load()
+        for node_type, node_id, related_nodes in (
+            ("decision", decision_id, [risk_id]),
+            ("change", change_id, [risk_id]),
+        ):
+            record = dict(snapshot.records[node_type][node_id])
+            record["related_nodes"] = list(dict.fromkeys([*record.get("related_nodes", []), *related_nodes]))
+            workspace.save(
+                node_type, record, node_id=node_id,
+                expected_token=snapshot.tokens[(node_type, node_id)],
+            )
+            snapshot = workspace.load()
+        boundary_id, _ = workspace.save("boundary", {
+            "path": "src/api.py", "constrains": [requirement_id],
+            "risks": [risk_id], "questions": [question_id],
+        })
+
+        snapshot = workspace.load()
+        requirement = dict(snapshot.records["requirement"][requirement_id])
+        requirement["related_nodes"] = [decision_id, change_id, risk_id, object_id]
+        workspace.save(
+            "requirement", requirement, node_id=requirement_id,
+            expected_token=snapshot.tokens[("requirement", requirement_id)],
+        )
+        nodes, edges = build_graph(workspace.load())
+        links = {(edge["source"], edge["target"], edge["label"]) for edge in edges}
+        self.assertIn((requirement_id, decision_id, "related to"), links)
+        self.assertIn((decision_id, requirement_id, "related to"), links)
+        self.assertIn((risk_id, change_id, "related to"), links)
+        self.assertIn((change_id, risk_id, "related to"), links)
+        self.assertIn((decision_id, risk_id, "related to"), links)
+        self.assertIn((risk_id, decision_id, "related to"), links)
+        self.assertIn((change_id, requirement_id, "related to"), links)
+        self.assertIn((boundary_id, risk_id, "constrains"), links)
+        self.assertIn((boundary_id, question_id, "constrains"), links)
+        self.assertEqual(engine.check_graph_validity(), [])
+
+        snapshot = workspace.load()
+        object_record = dict(snapshot.records["object"][object_id])
+        object_record["related_nodes"] = [boundary_id]
+        with self.assertRaises(ContextDataError):
+            workspace.save(
+                "object", object_record, node_id=object_id,
+                expected_token=snapshot.tokens[("object", object_id)],
+            )
+
     def test_context_workspace_validates_saves_and_detects_concurrent_edits(self):
         engine = ContextEngine(str(self.root))
         engine.init_folders()
@@ -1111,6 +1192,48 @@ class CommandFixTests(unittest.TestCase):
         self.assertIn('"boundaries"', system_prompt)
         self.assertNotIn('"requirements"', system_prompt)
         self.assertNotIn('"decisions"', system_prompt)
+        schema = json.loads(system_prompt.split("matching this JSON Schema:\n", 1)[1])
+        boundary = schema["properties"]["boundaries"]["items"]
+        self.assertIn("constrains", boundary["properties"])
+        self.assertIn("evidence_ids", boundary["properties"])
+        self.assertNotIn("id", boundary["properties"])
+        self.assertIn("evidence_quote", boundary["required"])
+        self.assertEqual(boundary["properties"]["status"]["enum"], ["proposed"])
+        self.assertIn("Infer candidate requirements", system_prompt)
+
+    def test_llm_schema_matches_models_and_limits_nested_verdicts_to_proposed(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=Response()) as urlopen:
+            ContextEngine(str(self.root)).execute_llm_distillation("input", "key", base_url="https://api.example/v1")
+        request_data = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        system_prompt = request_data["messages"][0]["content"]
+        schema = json.loads(system_prompt.split("matching this JSON Schema:\n", 1)[1])
+        properties = schema["properties"]
+        expected_fields = {
+            "requirements": {"statement", "kind", "priority", "source", "why", "derives_from", "added", "evidence_ids", "related_nodes"},
+            "decisions": {"chosen", "mode", "decided", "considered", "tradeoff", "reason", "evidence_ids", "related_nodes"},
+            "boundaries": {"path", "constrains", "risks", "questions", "rule", "why", "evidence", "evidence_ids"},
+            "objects": {"name", "kind", "description", "properties", "evidence", "status", "related_nodes"},
+            "questions": {"question", "answer", "owner", "requirements", "decisions", "objects", "evidence", "resolution", "related_nodes"},
+            "risks": {"statement", "likelihood", "impact", "mitigation", "requirements", "decisions", "changes", "evidence", "resolution", "related_nodes"},
+        }
+        for node_type, fields in expected_fields.items():
+            with self.subTest(node_type=node_type):
+                item = properties[node_type]["items"]
+                self.assertTrue(fields.issubset(item["properties"]))
+                self.assertEqual(item["properties"]["status"]["enum"], ["proposed"])
+        considered = schema["$defs"]["ConsideredObject"]
+        self.assertEqual(considered["properties"]["verdict"]["enum"], ["proposed"])
+        self.assertIn("Boundaries are human-set and authoritative", system_prompt)
 
     def test_llm_protocol_adapters_parse_provider_responses(self):
         cases = [
