@@ -41,41 +41,41 @@ TYPE_TITLES = {
     "requirement": "Requirements",
     "decision": "Decisions",
     "boundary": "Boundaries",
-    "evidence": "Evidence",
+    "evidence": "Sources",
     "change": "Changes",
     "question": "Questions",
     "risk": "Risks",
-    "object": "Objects",
+    "object": "Components",
 }
 
 TEMPLATES = {
     "requirement": {"statement": "Describe the constraint", "kind": "hard", "status": "active", "evidence_ids": []},
     "decision": {"chosen": "Chosen option", "mode": "default", "considered": [], "status": "active", "evidence_ids": []},
     "boundary": {"path": "src/path", "rule": "no_edit_without_approval", "constrains": [], "risks": [], "questions": [], "status": "active", "evidence_ids": []},
-    "evidence": {"source_type": "human", "excerpt": "Supporting evidence", "related_nodes": [], "status": "active"},
+    "evidence": {"source_type": "human", "excerpt": "Supporting source", "related_nodes": [], "status": "active"},
     "change": {"summary": "Describe the change", "files": [], "implements": [], "affects": [], "evidence": [], "status": "proposed"},
     "question": {"question": "What remains unknown?", "requirements": [], "decisions": [], "objects": [], "evidence": [], "status": "open"},
     "risk": {"statement": "Describe the risk", "requirements": [], "decisions": [], "changes": [], "evidence": [], "status": "open"},
-    "object": {"name": "Object name", "properties": [], "evidence": [], "status": "active"},
+    "object": {"name": "Component name", "properties": [], "evidence": [], "status": "active"},
 }
 
 REFERENCE_FIELDS = {
-    ("requirement", "evidence_ids"): ("evidence", "Evidence"),
-    ("decision", "evidence_ids"): ("evidence", "Evidence"),
-    ("boundary", "evidence_ids"): ("evidence", "Evidence"),
+    ("requirement", "evidence_ids"): ("evidence", "Source"),
+    ("decision", "evidence_ids"): ("evidence", "Source"),
+    ("boundary", "evidence_ids"): ("evidence", "Source"),
     ("evidence", "related_nodes"): ("any", "Context node"),
     ("change", "implements"): ("decision", "Decision"),
     ("change", "affects"): ("requirement", "Requirement"),
-    ("change", "evidence"): ("evidence", "Evidence"),
+    ("change", "evidence"): ("evidence", "Source"),
     ("question", "requirements"): ("requirement", "Requirement"),
     ("question", "decisions"): ("decision", "Decision"),
-    ("question", "objects"): ("object", "Object"),
-    ("question", "evidence"): ("evidence", "Evidence"),
+    ("question", "objects"): ("object", "Component"),
+    ("question", "evidence"): ("evidence", "Source"),
     ("risk", "requirements"): ("requirement", "Requirement"),
     ("risk", "decisions"): ("decision", "Decision"),
     ("risk", "changes"): ("change", "Change"),
-    ("risk", "evidence"): ("evidence", "Evidence"),
-    ("object", "evidence"): ("evidence", "Evidence"),
+    ("risk", "evidence"): ("evidence", "Source"),
+    ("object", "evidence"): ("evidence", "Source"),
 }
 
 for _field, _target_type in BOUNDARY_RELATIONSHIP_FIELDS.items():

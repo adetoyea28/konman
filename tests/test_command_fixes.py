@@ -25,7 +25,7 @@ from konman.config import (
     save_global_api_credentials,
 )
 from konman.engine import ContextEngine
-from konman.context_graph import ContextDataError, ConcurrentEditError, ContextWorkspace, build_graph
+from konman.context_graph import ContextDataError, ConcurrentEditError, ContextWorkspace, TYPE_TITLES, build_graph
 from konman.transcripts import parse_record
 
 
@@ -37,6 +37,10 @@ class CommandFixTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_legacy_node_types_use_component_and_source_display_labels(self):
+        self.assertEqual(TYPE_TITLES["object"], "Components")
+        self.assertEqual(TYPE_TITLES["evidence"], "Sources")
 
     def test_extract_saves_only_grounded_proposed_nodes(self):
         engine = ContextEngine(str(self.root))
@@ -320,6 +324,8 @@ class CommandFixTests(unittest.TestCase):
             "Project Context and Specifications: " + self.root.name,
             "A service for project planning.",
             "Keep the API stable",
+            "## Components",
+            "## Sources",
             "SQLite",
             "src/auth.py",
             "Refactoring authentication",

@@ -772,8 +772,8 @@ class ContextEngine:
                 summary.extend(f"- **{item.get('path', 'unknown')}**: {item.get('why', item.get('rule', 'protected'))}" for item in boundaries)
 
         for kind, title, status_values, default_status, label_field, detail_field in (
-            ("objects", "Tracked Objects", {"active"}, "active", "name", "description"),
-            ("evidence", "Evidence Sources", {"active"}, "active", "source_type", "locator"),
+            ("objects", "Components", {"active"}, "active", "name", "description"),
+            ("evidence", "Sources", {"active"}, "active", "source_type", "locator"),
             ("changes", "Recent Changes", {"active"}, "proposed", "summary", "commit"),
             ("questions", "Open Questions", {"open", "deferred"}, "open", "question", "owner"),
             ("risks", "Risk Register", {"open", "mitigated", "accepted"}, "open", "statement", "mitigation"),

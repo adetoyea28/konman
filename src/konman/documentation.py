@@ -145,8 +145,8 @@ def render_context_markdown(engine: ContextEngine) -> str:
     boundary_nodes.sort(key=lambda node: str(node.get("id") or node.get("path") or ""))
     lines.extend(_node_section("Protected Boundaries", boundary_nodes, "path"))
     for kind, title, label in (
-        ("objects", "Tracked Objects", "name"),
-        ("evidence", "Evidence", "excerpt"),
+        ("objects", "Components", "name"),
+        ("evidence", "Sources", "excerpt"),
         ("changes", "Changes", "summary"),
         ("questions", "Questions", "question"),
         ("risks", "Risks", "statement"),

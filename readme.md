@@ -1,17 +1,18 @@
-# konman (Context Manager) v1.1.4
+# konman (Context Manager) v1.1.5
 
 **Stable release:** Konman keeps developer context in version-controlled project data. Integration behavior still varies by vendor and version; generated adapters do not guarantee that a host invokes its hooks. Verify your own tool with `konman doctor`. Prompts and Git hooks are advisory, not security boundaries. Extraction proposes context for human review and can send redacted transcript text to the configured provider.
 
-## What's New in 1.1.4
+## What's New in 1.1.5
 
 - Strengthened extraction guidance to require exact human-authored evidence, omit unsupported or ambiguous candidates, ignore instructions embedded in source text, and return empty arrays when there is no grounded candidate.
-- This is the first stable release. Vendor-specific hook and transcript support remains version-dependent; see [Limitations](#limitations) before enabling integrations.
+- Components and first-class Objects are interchangeable names for the same node type; Sources and Evidence are interchangeable names for the same node type. The GUI and generated docs display Components and Sources. CLI type names (`object` and `evidence`), storage folders (`objects/` and `evidence/`), and O-/E- IDs remain unchanged for compatibility.
+- Vendor-specific hook and transcript support remains version-dependent; see [Limitations](#limitations) before enabling integrations.
 
 ### Included context graph features
 
-- Track first-class Objects, Evidence, Changes, Questions, and Risks alongside requirements, decisions, and protected boundaries. These records support extraction, review, resolution, validation, state, handoff, MCP, and generated documentation.
-- `konman mine` proposes structured Change and Evidence records for commit messages containing explicit reasoning clues.
-- Requirements, decisions, and boundaries extracted from captures are linked to proposed Evidence records.
+- Track first-class Components (stored as objects), Sources (stored as evidence), Changes, Questions, and Risks alongside requirements, decisions, and protected boundaries. These records support extraction, review, resolution, validation, state, handoff, MCP, and generated documentation.
+- `konman mine` proposes structured Change and Source records for commit messages containing explicit reasoning clues.
+- Requirements, decisions, and boundaries extracted from captures are linked to proposed Source records.
 - `konman record`, `konman review`, and `konman resolve` support the node lifecycles; `konman check` validates schemas and graph references.
 - Launch the optional local Streamlit context graph with `konman gui` after installing `konman[gui]`.
 - Generate Markdown or PDF specifications from project context with `konman doc`; PDF generation is available through the optional `pdf` extra.
@@ -38,7 +39,7 @@ Standard AI-driven development tools lock your project's history inside localize
 
 While *What, Where, When,* and *How* can easily be recovered by indexing raw code, the **Why** is completely lost once a session vanishes. **konman** dynamically captures the "Why" at the moment it is generated, standardizing it into an evaluation matrix:
 
-\[\text{Object } (O) \xrightarrow{\text{satisfies}} \text{Requirement } (R) \text{ due to its verified Property } (P)\]
+\[\text{Component } (O) \xrightarrow{\text{satisfies}} \text{Requirement } (R) \text{ due to its verified Property } (P)\]
 
 ---
 
@@ -48,13 +49,13 @@ While *What, Where, When,* and *How* can easily be recovered by indexing raw cod
 Ensure you have Python 3.10+ installed. Install the core library for Markdown documentation:
 
 ```bash
-pip install konman==1.1.4
+pip install konman==1.1.5
 ```
 
 To enable PDF documentation generation, install the `pdf` optional dependency extra:
 
 ```bash
-pip install "konman[pdf]==1.1.4"
+pip install "konman[pdf]==1.1.5"
 ```
 
 Verify your global environment configuration setup by triggering the structured help display:
@@ -71,8 +72,8 @@ konman init
 This deploys the underlying `.context/` data graph infrastructure:
 * `requirements/`: `.yaml` files detailing hard structural limitations and developer preferences.
 * `decisions/`: Architectural tradeoffs, chosen technologies, and rejected alternative options.
-* `objects/`: First-class tracked components, technologies, services, and their properties.
-* `evidence/`: Verbatim evidence and its source/provenance.
+* `objects/` (Components): Tracked components, technologies, services, and their properties. The existing directory name is retained for compatibility.
+* `evidence/` (Sources): Verbatim excerpts and their source/provenance. The existing directory name is retained for compatibility.
 * `changes/`: Proposed or accepted implementation changes and links to requirements/decisions.
 * `questions/`: Open questions, answers, and deferred items.
 * `risks/`: Risks, their likelihood/impact, mitigation, and resolution.
@@ -84,7 +85,7 @@ This deploys the underlying `.context/` data graph infrastructure:
 Install the GUI extra to browse the linked context graph and manage records in a local Streamlit interface:
 
 ```bash
-pip install "konman[gui]==1.1.4"
+pip install "konman[gui]==1.1.5"
 konman gui
 ```
 
@@ -179,7 +180,7 @@ Kiro IDE 1.x and CLI V3 load standalone hook files. Steering remains the static 
 | **`setup`** | `konman setup [tool-choice]` | Deploys targeted workspace adapters (`antigravity`, `claude-code`, `codex`, `vsc-copilot`, `cursor`, `kiro`). |
 | **`sync`** | `konman sync` | Traces dependencies, processes staleness propagation rules, and regenerates `AGENTS.md`. |
 | **`state`** | `konman state` | Renders a terminal visualization tree detailing active requirements, recent choices, and untracked queues. |
-| **`record`** | `konman record -t [type] -i [id]` | Manually records a requirement, decision, boundary, evidence, change, question, risk, or object. IDs use `R`, `D`, `B`, `E`, `C`, `Q`, `X`, and `O` prefixes respectively. |
+| **`record`** | `konman record -t [type] -i [id]` | Manually records a requirement, decision, boundary, source (`evidence` type), change, question, risk, or component (`object` type). IDs use `R`, `D`, `B`, `E`, `C`, `Q`, `X`, and `O` prefixes respectively. |
 | **`resolve`** | `konman resolve [id] [--answer|--defer|--mitigate|--accept-risk|--close-risk]` | Reconciles stale decisions and resolves or tracks open questions and risks. |
 | **`config`** | `konman config [-k key] [-p provider] [--api-format format] [--base-url url] [--model name] [--migrate] [--clear]` | Saves provider metadata in `~/.config/konman/config.json` and API keys in the OS credential store. |
 | **`doc`** | `konman doc [--format markdown|pdf] [--output FILE]` | Generates a project context and specifications document from `.context/` as Markdown or PDF. |
@@ -197,8 +198,8 @@ Kiro IDE 1.x and CLI V3 load standalone hook files. Steering remains the static 
 | **`backfill`** | `konman backfill --source name [--source-path FILE] [--dry-run]` | Incrementally parses supported source transcripts with durable cursors; parser coverage is version-specific. |
 | **`tail`** | `konman tail` | Deprecated Copilot-only alias for `backfill --source copilot`. |
 | **`clean`** | `konman clean --older-than DAYS [--dry-run]` | Previews or explicitly removes old raw capture files. |
-| **`mine`** | `konman mine -c [count]` | Captures local Git history and creates proposed Change and Evidence records for commits with explicit reasoning clues. |
-| **`extract`** | `konman extract [--provider name] [--api-format format] [--model name] [--base-url url] [--type NODE_TYPE]` | Sends unprocessed captures to a supported provider API and writes quote-grounded `proposed` nodes for human review. Repeat `--type` to select multiple types: requirement, decision, boundary, evidence, change, question, risk, or object; by default all types are extracted. |
+| **`mine`** | `konman mine -c [count]` | Captures local Git history and creates proposed Change and Source records for commits with explicit reasoning clues. |
+| **`extract`** | `konman extract [--provider name] [--api-format format] [--model name] [--base-url url] [--type NODE_TYPE]` | Sends unprocessed captures to a supported provider API and writes quote-grounded `proposed` nodes for human review. Repeat `--type` to select multiple types: requirement, decision, boundary, evidence (Source), change, question, risk, or object (Component); by default all types are extracted. |
 | **`handoff`** | `konman handoff [from] [to]` | Writes a context pack under `.context/state/history/` and configures the destination adapter. |
 | **`mcp`** | `konman mcp [--dir project]` | Runs the read-only Konman MCP server over stdio with context, boundary, decision-search, and typed-node listing tools. |
 
@@ -223,8 +224,8 @@ The document includes the project overview, all node types, protected boundaries
 
 Konman stores these records as linked context rather than treating all notes as interchangeable:
 
-- **Object (`O`)**: a named component, technology, service, or other entity, with properties.
-- **Evidence (`E`)**: a source locator and excerpt supporting one or more context claims.
+- **Component / Object (`O`)**: interchangeable names for a named component, technology, service, or other entity, with properties. The CLI and storage use the `object` type name.
+- **Source / Evidence (`E`)**: interchangeable names for a source locator and excerpt supporting one or more context claims. The CLI and storage use the `evidence` type name.
 - **Change (`C`)**: an implementation change, optionally linked to decisions, requirements, files, and verification.
 - **Question (`Q`)**: an unresolved information gap that can be answered or deferred.
 - **Risk (`X`)**: a possible adverse outcome with likelihood, impact, mitigation, and resolution.
@@ -232,8 +233,8 @@ Konman stores these records as linked context rather than treating all notes as 
 All node types can be added manually with `konman record` or proposed from captured context with `konman extract`. Proposed records stay inactive until reviewed. Use `konman review` to list proposals, then approve, edit, or reject by ID:
 
 ```bash
-konman record --type object --id O-001
-konman extract --type evidence --type risk
+konman record --type object --id O-001  # Creates a Component; object is the compatibility type name.
+konman extract --type evidence --type risk  # Extracts a Source and a Risk.
 konman review
 konman review --id E-001 --approve
 konman resolve Q-001 --answer "The API must remain backward compatible."
@@ -241,7 +242,7 @@ konman resolve X-001 --mitigate "Add a compatibility test before release."
 konman check --strict
 ```
 
-Evidence IDs use `E-001`, changes `C-001`, questions `Q-001`, risks `X-001`, and tracked objects `O-001`. Requirements, decisions, and boundaries use `R`, `D`, and `B` prefixes. Run `konman record --help` and `konman resolve --help` for required fields and lifecycle options.
+Source IDs use `E-001`, changes `C-001`, questions `Q-001`, risks `X-001`, and Components use `O-001`. Requirements, decisions, and boundaries use `R`, `D`, and `B` prefixes. Run `konman record --help` and `konman resolve --help` for required fields and lifecycle options.
 
 Examples:
 
@@ -255,7 +256,7 @@ konman config --api-key "$GROQ_API_KEY" --provider groq --model "$GROQ_MODEL"
 konman config --api-key "$LLM_API_KEY" --provider my-provider --api-format openai-compatible --base-url https://llm.example/v1 --model my-model
 ```
 
-Select the context types requested from the model by specifying one or more `--type` options. Supported types are requirements, decisions, boundaries, evidence, changes, questions, risks, and objects. Quote-backed evidence records are also saved as provenance when extracting another type. Without the option, extraction requests all supported types.
+Select the context types requested from the model by specifying one or more `--type` options. Supported CLI types are requirements, decisions, boundaries, evidence (displayed as Sources), changes, questions, risks, and objects (displayed as Components). Quote-backed Source records are also saved as provenance when extracting another type. Without the option, extraction requests all supported types.
 
 ```bash
 konman extract --type requirement

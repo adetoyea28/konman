@@ -422,7 +422,7 @@ def main() -> None:
 
     st.subheader("Project context map")
     st.caption("Node color denotes type; status appears in each node. Select a record below to inspect or edit it.")
-    st.caption("🔵 Requirement · 🟣 Decision · 🟦 Object · ⚪ Evidence · 🟡 Question · 🟢 Change · 🟠 Boundary · 🔴 Risk")
+    st.caption("🔵 Requirement · 🟣 Decision · 🟦 Component · ⚪ Source · 🟡 Question · 🟢 Change · 🟠 Boundary · 🔴 Risk")
     if filtered_nodes:
         flow_nodes, flow_edges = _graph_elements(filtered_nodes, filtered_edges)
         try:
