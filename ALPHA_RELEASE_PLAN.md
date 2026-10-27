@@ -1,8 +1,10 @@
-# Konman Alpha Readiness Plan
+# Historical: Konman Alpha Readiness Plan
+
+> This is a historical planning document from the alpha period. It is superseded by the v1.1.4 stable release; its acceptance checklist records the concerns considered during that period and is not current release guidance. Current operational limitations are documented in [readme.md](./readme.md#limitations).
 
 ## Purpose
 
-This document is the implementation specification for preparing Konman for a small, explicitly labeled alpha. It is not a claim that the current build is production-ready. The current code has useful CLI and graph foundations, but tests primarily exercise synthetic configurations and mocked provider responses. No real vendor-hook session or hosted LLM request has been verified end to end.
+At the time it was written, this document captured the implementation specification for preparing Konman for a small, explicitly labeled alpha. Its observations and checklist are historical and are not a statement of the current release status.
 
 The alpha goal is safe, inspectable experimentation: preserve source evidence, avoid silent loss, make proposed context reviewable, and report integration limitations honestly. It is not to promise universal agent coverage or enforce boundaries against an agent that can edit files outside Konman's controls.
 
@@ -157,7 +159,7 @@ Exit nonzero for actionable failures; warnings such as an uninstalled vendor CLI
 
 ### 11. Alpha Packaging, Tests, and Documentation
 
-**Files:** `pyproject.toml`, `README.md`, tests, changelog/release notes
+**Files:** `pyproject.toml`, `readme.md`, tests, changelog/release notes
 
 - Replace the `Production/Stable` classifier with an Alpha classifier, align `pyproject.toml` and `src/konman/__init__.py` versions, and state that vendor hook formats can change.
 - Add automated tests for each source parser, cursor resume/rotation, redaction, queue retry behavior, schema validation, boundary append, duplicate IDs, hook collisions, and pre-commit behavior.
@@ -188,4 +190,4 @@ A release candidate is suitable for a small alpha only when all are true:
 - `doctor` clearly distinguishes configured adapters from integrations verified to have fired.
 - Tests pass on supported OS/Python combinations; any vendor API/hook surface not exercised is listed as unverified in the release notes.
 
-Until that gate is met, describe Konman as an experimental alpha prototype, not a production-stable context engine.
+The checklist above describes the historical alpha-readiness gate and should not be read as a current status statement.

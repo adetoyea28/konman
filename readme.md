@@ -1,27 +1,26 @@
-# konman (Context Manager) v1.1.3a4 Alpha
+# konman (Context Manager) v1.1.4
 
-**Experimental alpha:** Konman is being tested by early users. Generated adapters and parser fixtures do not prove that every vendor client/version will invoke its hooks. Verify your own tool with `konman doctor`; do not treat prompts or Git hooks as a security boundary. Extraction proposes context for human review and can send redacted transcript text to the configured provider.
+**Stable release:** Konman keeps developer context in version-controlled project data. Integration behavior still varies by vendor and version; generated adapters do not guarantee that a host invokes its hooks. Verify your own tool with `konman doctor`. Prompts and Git hooks are advisory, not security boundaries. Extraction proposes context for human review and can send redacted transcript text to the configured provider.
 
-Konman keeps developer context in version-controlled project data rather than only in chat sessions.
+## What's New in 1.1.4
 
-## What's New in 1.1.3a4
+- Strengthened extraction guidance to require exact human-authored evidence, omit unsupported or ambiguous candidates, ignore instructions embedded in source text, and return empty arrays when there is no grounded candidate.
+- This is the first stable release. Vendor-specific hook and transcript support remains version-dependent; see [Limitations](#limitations) before enabling integrations.
+
+### Included context graph features
 
 - Track first-class Objects, Evidence, Changes, Questions, and Risks alongside requirements, decisions, and protected boundaries. These records support extraction, review, resolution, validation, state, handoff, MCP, and generated documentation.
-- `konman mine` now proposes structured Change and Evidence records for commit messages containing explicit reasoning clues.
-- Requirements, decisions, and boundaries extracted from captures are linked to proposed Evidence records; this provenance record is created alongside the selected node type.
-- `konman record`, `konman review`, and `konman resolve` support the new node lifecycles; `konman check` validates their schemas and graph references.
-- Fixed GUI node creation so the newly created node is selected without mutating Streamlit's selectbox state after the widget has been instantiated.
-- Launch the optional local Streamlit context graph with `konman gui` after installing `konman[gui]`. Browse typed relationships, create/edit records, review proposals, resolve questions/risks, and check graph validity.
-
-### Previous updates in 1.1.2a1
-
-- Generate a Markdown or PDF specification document from project context with `konman doc`; PDF generation is available through the optional `pdf` extra.
+- `konman mine` proposes structured Change and Evidence records for commit messages containing explicit reasoning clues.
+- Requirements, decisions, and boundaries extracted from captures are linked to proposed Evidence records.
+- `konman record`, `konman review`, and `konman resolve` support the node lifecycles; `konman check` validates schemas and graph references.
+- Launch the optional local Streamlit context graph with `konman gui` after installing `konman[gui]`.
+- Generate Markdown or PDF specifications from project context with `konman doc`; PDF generation is available through the optional `pdf` extra.
 
 ### Previous updates in 1.1.1a1
 
-- Select the context node types to extract with repeatable `konman extract --type` options. Requirements, decisions, and boundaries can be extracted, and later runs can process additional types from the same captures.
-- Extracted boundaries are proposed for review like other extracted nodes. They become active context only after approval with `konman review --id B-001`.
-- Switching providers with `konman config --provider` now uses the selected provider's defaults rather than silently reusing the previous provider's API format, endpoint, or credential. Partial updates to the currently configured provider continue to reuse its saved settings.
+- Select context node types with repeatable `konman extract --type` options, and process additional types from the same captures in later runs.
+- Extracted boundaries are proposed for review like other extracted nodes; approve them explicitly with `konman review --id B-001`.
+- Provider switching uses the selected provider's defaults rather than silently reusing the previous provider's API format, endpoint, or credential.
 
 ---
 
@@ -49,13 +48,13 @@ While *What, Where, When,* and *How* can easily be recovered by indexing raw cod
 Ensure you have Python 3.10+ installed. Install the core library for Markdown documentation:
 
 ```bash
-pip install konman==1.1.3a4
+pip install konman==1.1.4
 ```
 
 To enable PDF documentation generation, install the `pdf` optional dependency extra:
 
 ```bash
-pip install "konman[pdf]==1.1.3a4"
+pip install "konman[pdf]==1.1.4"
 ```
 
 Verify your global environment configuration setup by triggering the structured help display:
@@ -85,7 +84,7 @@ This deploys the underlying `.context/` data graph infrastructure:
 Install the GUI extra to browse the linked context graph and manage records in a local Streamlit interface:
 
 ```bash
-pip install "konman[gui]==1.1.3a4"
+pip install "konman[gui]==1.1.4"
 konman gui
 ```
 
@@ -305,7 +304,7 @@ konman disable-hooks
 ```
 This removes only Konman's marked block and preserves unrelated hook commands.
 
-## Alpha Limitations
+## Limitations
 
 - Hook formats, transcript locations, and tool behavior vary by vendor and version. Adapters and parsers need validation with the exact host application; a generated file does not prove a hook fired.
 - Transcript parsers cover known layouts, not every release or account configuration. `backfill --source` reports parsed/failed counts; inspect the result before relying on it.
@@ -313,4 +312,4 @@ This removes only Konman's marked block and preserves unrelated hook commands.
 - Extraction is model-assisted and may omit, misunderstand, or duplicate context. Results remain proposed until a human reviews them; quotes establish textual provenance, not truth.
 - The configured provider receives redacted transcript excerpts during `extract`. Review the selected provider's retention and data-use policies before use.
 - Git hooks and AGENTS instructions are advisory local safeguards, not sandboxing or access control.
-- Alpha testing has not validated every adapter or provider against a live vendor environment. Please report tool name/version, OS, and sanitized diagnostics when filing issues; do not attach raw prompts or credentials.
+- This release does not claim that every adapter or provider has been verified against every live vendor environment. Please report tool name/version, OS, and sanitized diagnostics when filing issues; do not attach raw prompts or credentials.
